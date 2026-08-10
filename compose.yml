@@ -1,0 +1,133 @@
+# Orchestration de développement.
+# Voir docs/architecture.md §13-14.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: moozika
+      POSTGRES_PASSWORD: moozika
+      POSTGRES_DB: moozika
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U moozika -d moozika"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: moozika
+      MINIO_ROOT_PASSWORD: moozika_secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: moozika
+      MINIO_ROOT_PASSWORD: moozika_secret
+      MINIO_BUCKET: moozika-scores
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD;
+      mc mb -p local/$$MINIO_BUCKET || true;
+      echo Bucket ready;
+      "
+
+  audiveris:
+    build:
+      context: ./apps/audiveris-service
+    ports:
+      - "8081:8081"
+    environment:
+      # per-op (chaque run Audiveris/gs). Le split page-par-page en enchaîne N.
+      - AUDIVERIS_TIMEOUT=600
+
+  omr-service:
+    build:
+      context: ./apps/omr-service
+      target: runtime
+    ports:
+      - "8000:8000"
+    environment:
+      - AUDIVERIS_URL=http://audiveris:8081
+      # Attente HTTP omr→audiveris : le split page-par-page cumule N runs → 30 min.
+      - AUDIVERIS_TIMEOUT=1800
+      - FLAGS_use_mkldnn=0
+      - OMP_NUM_THREADS=1
+    volumes:
+      - ./apps/omr-service/app:/app/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      - audiveris
+
+  api:
+    build:
+      context: ./apps/api
+    ports:
+      - "8080:8080"
+    environment:
+      APP_ENV: dev
+      APP_SECRET: change_me_moozika_dev_secret_32chars
+      DATABASE_URL: postgresql://moozika:moozika@postgres:5432/moozika?serverVersion=16&charset=utf8
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: moozika
+      POSTGRES_PASSWORD: moozika
+      POSTGRES_DB: moozika
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: moozika
+      MINIO_SECRET_KEY: moozika_secret
+      MINIO_BUCKET: moozika-scores
+      MINIO_REGION: us-east-1
+      OMR_SERVICE_URL: http://omr-service:8000
+      CORS_ALLOW_ORIGIN: '^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$'
+    volumes:
+      - ./apps/api:/var/www/api
+      - api_vendor:/var/www/api/vendor
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      omr-service:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./apps/frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - OMR_SERVICE_URL=http://omr-service:8000
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./apps/frontend/src:/app/src
+    depends_on:
+      - omr-service
+      - api
+
+  omr-test:
+    build:
+      context: ./apps/omr-service
+      target: test
+    profiles: ["test"]
+
+volumes:
+  postgres_data:
+  minio_data:
+  api_vendor:

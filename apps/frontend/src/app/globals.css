@@ -1,0 +1,976 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* OSMD injecte du SVG ; on le laisse s'étendre en largeur. */
+.osmd-container svg {
+  max-width: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Partition sol-fa (style recueil malgache)
+   Principe : chaque voix d'un système est une rangée flex identique ;
+   les mesures prennent flex:1 et les temps prennent flex:1 dans la mesure.
+   La rangée "paroles" réutilise exactement la même structure → alignement.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.solfa-score {
+  --solfa-ink: #1a1a1a;
+  --solfa-muted: #555;
+  --solfa-rule: #d0d0d0;
+  --solfa-paper: #ffffff;
+  --solfa-label-w: 2.6rem;   /* largeur colonne étiquette (num + abbr voix) */
+  --solfa-bar-w: 0.8rem;     /* largeur d'une barre de mesure | */
+  --solfa-sep-w: 1.2rem;     /* largeur d'un séparateur : ou ! */
+  --solfa-font-size: 0.9rem;
+  --solfa-line-h: 1.5rem;
+
+  background: var(--solfa-paper);
+  color: var(--solfa-ink);
+  padding: 1.5rem 1.25rem 2rem;
+  overflow-x: auto;
+}
+
+/* ── En-tête ──────────────────────────────────────────────────────────── */
+
+.solfa-score__header {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) minmax(0, 2.8fr) minmax(7rem, 1fr);
+  align-items: start;
+  gap: 0.4rem 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.solfa-score__meta-left,
+.solfa-score__meta-right {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--solfa-ink);
+  line-height: 1.35;
+}
+
+.solfa-score__meta-right {
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  text-align: right;
+  font-weight: 500;
+  color: var(--solfa-muted);
+}
+
+/* ── Contrôle tempo (en-tête partition) ───────────────────────────────── */
+
+.tempo-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--solfa-ink, #1a1a1a);
+}
+
+.tempo-control--compact {
+  font-size: 0.875rem;
+}
+
+.tempo-control__note {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 2rem;
+  height: 1.65rem;
+}
+
+.tempo-control__select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.tempo-control__symbol {
+  font-size: 1.15em;
+  line-height: 1;
+  pointer-events: none;
+  user-select: none;
+}
+
+.tempo-control__eq {
+  font-weight: 600;
+  color: var(--solfa-muted, #555);
+  user-select: none;
+}
+
+.tempo-control__input {
+  width: 2.75rem;
+  padding: 0.15rem 0.25rem;
+  border: 1px solid var(--solfa-rule, #d0d0d0);
+  border-radius: 0.2rem;
+  background: #fff;
+  font: inherit;
+  font-weight: 600;
+  text-align: center;
+  color: inherit;
+  -moz-appearance: textfield;
+}
+
+.tempo-control__input::-webkit-outer-spin-button,
+.tempo-control__input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tempo-control__input:focus {
+  outline: 2px solid #94a3b8;
+  outline-offset: 1px;
+  border-color: #94a3b8;
+}
+
+.tempo-control--compact .tempo-control__note {
+  min-width: 2.25rem;
+  height: 2rem;
+}
+
+.tempo-control--compact .tempo-control__input {
+  width: 3.25rem;
+  padding: 0.25rem 0.35rem;
+  border-color: #d1d5db;
+  border-radius: 0.375rem;
+}
+
+.tempo-control--compact .tempo-control__input:focus {
+  outline-color: #64748b;
+  border-color: #64748b;
+}
+
+.solfa-score__titles {
+  text-align: center;
+}
+
+.solfa-score__title {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.005em;
+  line-height: 1.25;
+  color: var(--solfa-ink);
+}
+
+.solfa-score__subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--solfa-muted);
+  line-height: 1.3;
+}
+
+/* ── Corps (liste de systèmes) ─────────────────────────────────────────── */
+
+.solfa-score__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Directives de mesure + nuances/soufflets — une rangée alignée sur la grille des temps */
+.solfa-meta-row {
+  display: flex;
+  align-items: flex-end;
+  width: 100%;
+  min-height: 1.2rem;
+  margin-bottom: 0.1rem;
+}
+
+.solfa-meta-row .solfa-label {
+  min-height: 1.2rem;
+}
+
+.solfa-meta-row .solfa-measure {
+  align-items: flex-end;
+}
+
+.solfa-bar-slot--meta {
+  flex: 0 0 var(--solfa-bar-w);
+  width: var(--solfa-bar-w);
+}
+
+.solfa-meta-cell {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  min-height: 1.1rem;
+  padding-bottom: 0.05rem;
+}
+
+/* Plusieurs indications sur le même temps : empilées (col), comme à l'impression */
+.solfa-meta-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.06rem;
+  max-width: 100%;
+}
+
+.solfa-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+  max-width: 100%;
+  border: 1px solid #d6d3d1;
+  border-radius: 0.2rem;
+  background: #fafaf9;
+  color: #44403c;
+  font-size: 0.58rem;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 0.05rem 0.22rem;
+  white-space: nowrap;
+}
+
+.solfa-meta-chip--measure {
+  font-style: normal;
+  letter-spacing: 0.01em;
+}
+
+.solfa-meta-chip:not(.solfa-meta-chip--measure) {
+  font-style: italic;
+}
+
+.solfa-meta-chip-x {
+  border: none;
+  background: transparent;
+  color: #a8a29e;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.solfa-meta-chip-x:hover {
+  color: #b91c1c;
+}
+
+.solfa-beat-plus--expr {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  opacity: 0;
+}
+
+.solfa-meta-row:hover .solfa-beat-plus--expr,
+.solfa-meta-cell:hover .solfa-beat-plus--expr,
+.solfa-beat-plus--expr:focus-visible {
+  opacity: 1;
+}
+
+.solfa-system:hover .solfa-bar-plus,
+.solfa-bar-plus:focus-visible,
+.solfa-bar-slot--meta:hover .solfa-bar-plus {
+  opacity: 1;
+}
+
+.solfa-bar-slot {
+  flex: 0 0 var(--solfa-bar-w);
+  width: var(--solfa-bar-w);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  position: relative;
+}
+
+/* Numéro de mesure : au-dessus de la barre | (dernière ligne du bar-slot,
+   donc au plus près de la musique en dessous). Débordement symétrique
+   autorisé pour les nombres à 2-3 chiffres, centrés sur la barre. */
+.solfa-measure-num {
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--solfa-muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+}
+
+.solfa-bar-plus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-bottom: 0.05rem;
+  border: 1px solid var(--solfa-rule);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--solfa-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 0;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.12s ease;
+}
+
+.solfa-bar-plus:hover {
+  color: var(--solfa-ink);
+  border-color: var(--solfa-ink);
+}
+
+.solfa-beat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  border: 1px solid #d6d3d1;
+  border-radius: 0.2rem;
+  background: #fafaf9;
+  color: #44403c;
+  font-size: 0.58rem;
+  font-weight: 700;
+  line-height: 1.1;
+  padding: 0.05rem 0.22rem;
+  font-style: italic;
+}
+
+.solfa-beat-chip-x {
+  border: none;
+  background: transparent;
+  color: #a8a29e;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.solfa-beat-chip-x:hover {
+  color: #b91c1c;
+}
+
+/* ── Rangée « ajouter une voix » (sous les barres) ─────────────────────── */
+/* Mêmes colonnes que la rangée directives → le + s'aligne sous chaque barre. */
+.solfa-addvoice-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  min-height: 0.9rem;
+  margin-top: 0.05rem;
+}
+
+.solfa-addvoice-cell {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+}
+
+.solfa-addvoice-row .solfa-bar-slot {
+  justify-content: flex-start;
+}
+
+/* ── Système ───────────────────────────────────────────────────────────── */
+
+.solfa-system {
+  /* Séparation visuelle entre systèmes */
+  padding-top: 0.5rem;
+  padding-bottom: 0.15rem;
+  border-bottom: 1px solid transparent;
+}
+
+.solfa-system + .solfa-system {
+  border-top: 1px dashed var(--solfa-rule);
+  margin-top: 0.25rem;
+  padding-top: 0.65rem;
+}
+
+.solfa-music {
+  display: flex;
+  flex-direction: column;
+  gap: 0.08rem;
+}
+
+/* ── Rangée (voix ou paroles) ──────────────────────────────────────────── */
+/* Structure : [label-col] [row-content]
+   row-content = [mesure flex:1]… en flex-row */
+
+.solfa-voice-row,
+.solfa-lyrics-row {
+  display: flex;
+  align-items: baseline;
+  width: 100%;
+  min-height: var(--solfa-line-h);
+}
+
+/* Colonne étiquette : numéro de mesure + abréviation voix */
+.solfa-label {
+  flex: 0 0 var(--solfa-label-w);
+  width: var(--solfa-label-w);
+  display: flex;
+  align-items: baseline;
+  gap: 0.15rem;
+  padding-right: 0.3rem;
+  justify-content: flex-end;
+  user-select: none;
+}
+
+.solfa-abbr {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--solfa-muted);
+  letter-spacing: 0;
+  min-width: 0.8rem;
+  text-align: right;
+}
+
+/* Contenu de la rangée : les mesures s'y distribuent */
+.solfa-row-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+}
+
+/* ── Mesure ────────────────────────────────────────────────────────────── */
+/* flex:1 → toutes les mesures du système ont la même largeur */
+
+.solfa-measure {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+}
+
+/* Temps en cours de lecture : fond vert très transparent mais bien visible. */
+.solfa-beat-group--playing {
+  background-color: rgba(34, 197, 94, 0.18);
+  border-radius: 3px;
+}
+
+/* Portée : bande verte du temps joué, positionnée (left/width/display) par le
+   surligneur impératif (playbackHighlight). top/height posés inline par voix. */
+.staff-playhead {
+  position: absolute;
+  display: none;
+  background-color: rgba(34, 197, 94, 0.2);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── Barre de mesure | ─────────────────────────────────────────────────── */
+
+.solfa-bar {
+  flex: 0 0 var(--solfa-bar-w);
+  width: var(--solfa-bar-w);
+  text-align: center;
+  font-size: var(--solfa-font-size);
+  font-weight: 500;
+  color: var(--solfa-ink);
+  line-height: var(--solfa-line-h);
+  user-select: none;
+}
+
+/* Barre fantôme dans la rangée paroles : invisible mais occupe l'espace */
+.solfa-bar--ghost {
+  color: transparent;
+  pointer-events: none;
+}
+
+.solfa-beat-group {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: baseline;
+}
+
+.solfa-beat-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+}
+
+.solfa-beat-annot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.1rem;
+  padding-bottom: 0.08rem;
+  pointer-events: none;
+}
+
+.solfa-beat-annot .solfa-beat-chips,
+.solfa-beat-annot .solfa-beat-chip,
+.solfa-beat-annot .solfa-beat-chip-x {
+  pointer-events: auto;
+}
+
+.solfa-beat-plus--voice {
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  transform: translateX(-50%);
+  z-index: 2;
+  margin-bottom: 0.06rem;
+  opacity: 0;
+}
+
+.solfa-beat-group:focus-within .solfa-beat-plus--voice,
+.solfa-beat-group:hover .solfa-beat-plus--voice,
+.solfa-beat-plus--voice:focus-visible {
+  opacity: 1;
+}
+
+.solfa-sep--triplet-gap {
+  color: transparent;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ── Triolet (crochet + chiffre 3) ─────────────────────────────────────── */
+
+.solfa-beat-group--triplet {
+  z-index: 1;
+}
+
+.solfa-beat-group--triplet-pair {
+  flex: 2;
+}
+
+.solfa-beat-row--triplet-pair {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+}
+
+.solfa-note-input--triplet-pair {
+  flex: 1;
+  min-width: 0;
+}
+
+.solfa-triplet-bracket {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 0.9rem;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.solfa-triplet-bracket__num {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 0.58rem;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  color: var(--solfa-ink);
+}
+
+.solfa-triplet-bracket__rail {
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  bottom: 0;
+  height: 0.35rem;
+  border-top: 1px solid var(--solfa-ink);
+  border-left: 1px solid var(--solfa-ink);
+  border-right: 1px solid var(--solfa-ink);
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+}
+
+@media print {
+  .solfa-triplet-bracket__num,
+  .solfa-triplet-bracket__rail {
+    border-color: #000 !important;
+    color: #000 !important;
+  }
+}
+
+.solfa-beat-plus {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 1px solid var(--solfa-rule);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--solfa-muted);
+  font-size: 0.62rem;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: opacity 0.12s ease;
+  flex-shrink: 0;
+}
+
+.solfa-beat-plus:hover {
+  color: var(--solfa-ink);
+  border-color: var(--solfa-ink);
+}
+
+.solfa-beat-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.12rem;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.solfa-beat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1rem;
+  border: 1px solid #d6d3d1;
+  border-radius: 0.2rem;
+  background: #fafaf9;
+  color: #44403c;
+  font-size: 0.58rem;
+  font-weight: 700;
+  line-height: 1.1;
+  padding: 0.05rem 0.22rem;
+  font-style: italic;
+}
+
+.solfa-beat-chip-x {
+  border: none;
+  background: transparent;
+  color: #a8a29e;
+  font-size: 0.65rem;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+}
+
+.solfa-beat-chip-x:hover {
+  color: #b91c1c;
+}
+
+.solfa-measure--lyrics .solfa-beat-group {
+  align-items: baseline;
+}
+
+/* ── Groupe temps : note + séparateur ─────────────────────────────────── */
+/* flex:1 → tous les temps d'une mesure ont la même largeur */
+
+/* ── Cellule note ─────────────────────────────────────────────────────── */
+/* flex:1 dans le groupe temps → prend l'espace disponible */
+
+.solfa-beat {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: var(--solfa-font-size);
+  line-height: var(--solfa-line-h);
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Champ libre d'édition d'une cellule sol-fa */
+.solfa-note-input {
+  flex: 1;
+  min-width: 0;
+  width: 0;
+  padding: 0.05rem 0.1rem;
+  font-family: inherit;
+  font-size: var(--solfa-font-size);
+  line-height: var(--solfa-line-h);
+  text-align: center;
+  color: var(--solfa-ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  outline: none;
+}
+
+.solfa-note-input:hover {
+  border-bottom-color: #ccc;
+  background: #fafafa;
+}
+
+.solfa-note-input:focus {
+  border-bottom-color: #555;
+  background: #f5f5f5;
+}
+
+.solfa-note-input:disabled {
+  opacity: 0.6;
+}
+
+.solfa-note-input--error {
+  background: #c62828 !important;
+  color: #ffffff !important;
+  border-bottom-color: #8e0000 !important;
+  font-weight: 600;
+}
+
+.solfa-note-input--error:focus {
+  background: #b71c1c !important;
+  border-bottom-color: #ffffff !important;
+}
+
+/* ── Séparateur : ou ! ──────────────────────────────────────────────────── */
+
+.solfa-sep {
+  flex: 0 0 var(--solfa-sep-w);
+  width: var(--solfa-sep-w);
+  text-align: center;
+  font-size: var(--solfa-font-size);
+  line-height: var(--solfa-line-h);
+  color: var(--solfa-muted);
+  user-select: none;
+}
+
+.solfa-sep--ghost {
+  color: transparent;
+  pointer-events: none;
+}
+
+/* ── Rangée paroles ────────────────────────────────────────────────────── */
+
+.solfa-lyrics-row {
+  align-items: stretch;
+  margin-top: 0.3rem;
+  padding-bottom: 1.5rem; /* espace pour les paroles entre systèmes */
+}
+
+.solfa-measure--lyrics {
+  align-items: stretch;
+}
+
+.solfa-label--lyrics {
+  /* étiquette vide — même hauteur pour aligner */
+  min-height: 1.9rem;
+}
+
+/* ── Input paroles ────────────────────────────────────────────────────── */
+
+.solfa-lyric-input {
+  flex: 1;
+  min-width: 0;
+  width: 0;                 /* le flex s'en charge */
+  padding: 0.1rem 0.15rem;
+  font-family: inherit;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: var(--solfa-ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #d8d8d8;
+  border-radius: 0;
+  outline: none;
+  text-align: center;
+  transition: border-color 0.15s;
+  caret-color: #666;
+}
+
+.solfa-lyric-input::placeholder {
+  color: transparent;
+}
+
+.solfa-lyric-input:focus {
+  border-bottom-color: #555;
+  background: #f9f9f9;
+}
+
+.solfa-lyric-input:not(:placeholder-shown) {
+  border-bottom-color: #aaa;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────── */
+
+.solfa-score--dense-measure {
+  --solfa-sep-w: 0.85rem;
+  --solfa-font-size: 0.82rem;
+}
+
+@media (max-width: 640px) {
+  .solfa-score--dense-measure {
+    --solfa-sep-w: 0.65rem;
+    --solfa-font-size: 0.72rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .solfa-score {
+    --solfa-label-w: 2rem;
+    --solfa-bar-w: 0.55rem;
+    --solfa-sep-w: 0.9rem;
+    --solfa-font-size: 0.78rem;
+    padding: 1rem 0.5rem 1.5rem;
+  }
+
+  .solfa-score__header {
+    grid-template-columns: 1fr;
+    text-align: center;
+    margin-bottom: 1.1rem;
+  }
+
+  .solfa-score__meta-left,
+  .solfa-score__meta-right {
+    text-align: center;
+  }
+
+  .solfa-score__title {
+    font-size: 1.1rem;
+  }
+
+  .solfa-lyric-input {
+    font-size: 0.68rem;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Impression / Export PDF
+   Le bouton « PDF » appelle window.print() : le navigateur propose
+   « Enregistrer au format PDF ». On imprime la vue active telle qu'affichée
+   (sol-fa OU portée), débarrassée du chrome d'édition, en préservant les
+   détails musicaux (titre, tonique, métrique, tempo, mesures, rythme).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+@media print {
+  @page {
+    margin: 12mm;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  /* Chrome d'édition à ne jamais imprimer : boutons +, croix des chips,
+     lignes supplémentaires, etc. Les libellés (chips) restent, eux, visibles. */
+  .solfa-bar-plus,
+  .solfa-beat-plus,
+  .solfa-meta-chip-x,
+  .solfa-beat-chip-x,
+  .staff-stage button {
+    display: none !important;
+  }
+
+  /* Rangée « ajouter une voix » : purement éditoriale → hors impression. */
+  .solfa-addvoice-row {
+    display: none !important;
+  }
+
+  /* ── Sol-fa ─────────────────────────────────────────────────────────── */
+  .solfa-score {
+    overflow: visible !important;
+    padding: 0.25rem 0 !important;
+    background: #fff !important;
+  }
+
+  .solfa-meta-chip {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    font-size: 0.62rem !important;
+  }
+
+  .solfa-meta-stack {
+    gap: 0.04rem;
+  }
+
+  /* Champs éditables → texte simple (ni bordure, ni fond, ni surlignage rouge) */
+  .solfa-note-input,
+  .solfa-lyric-input {
+    border: none !important;
+    background: transparent !important;
+    color: #000 !important;
+  }
+
+  .solfa-note-input--error {
+    background: transparent !important;
+    color: #000 !important;
+    font-weight: inherit !important;
+  }
+
+  /* Tempo : garder « ♩ = 120 » lisible, neutraliser le champ interactif */
+  .tempo-control__input {
+    border: none !important;
+    background: transparent !important;
+    width: auto !important;
+    min-width: 2ch;
+    padding: 0 !important;
+  }
+
+  /* ── Portée ─────────────────────────────────────────────────────────── */
+  /* Le SVG (viewBox) se remet à l'échelle de la largeur de page ; les
+     partitions plus étroites gardent leur taille naturelle (pas d'agrandissement). */
+  .staff-scroll {
+    overflow: visible !important;
+    border: none !important;
+    background: #fff !important;
+    margin: 0 0 0.75rem !important;
+  }
+
+  /* Système fusionné : le conteneur largeur=totalW passe en auto pour que les
+     portées se remettent à l'échelle de la page au lieu de déborder. */
+  .staff-system {
+    width: auto !important;
+  }
+
+  /* L'étiquette de voix ne reste pas « collée » à l'impression. */
+  .staff-label {
+    position: static !important;
+    background: transparent !important;
+  }
+
+  .staff-stage {
+    width: auto !important;
+    height: auto !important;
+  }
+
+  .staff-stage svg {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: 100% !important;
+  }
+
+  /* ── Sauts de page : ne pas couper un système / une portée en deux ──── */
+  .solfa-system,
+  .solfa-voice-row,
+  .solfa-lyrics-row,
+  .staff-scroll {
+    break-inside: avoid;
+  }
+
+  /* Le surlignage de lecture est une aide écran : jamais à l'impression. */
+  .solfa-beat-group--playing {
+    background-color: transparent !important;
+  }
+  .staff-playhead {
+    display: none !important;
+  }
+}

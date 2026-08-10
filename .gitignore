@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+
+# Modèles ML (poids YOLO/TrOCR — lourds, pas dans git)
+*.pt
+!*.gitkeep
+
+# Divers
+.env
+.env.local
+*.log
+.DS_Store
+
+docs/*

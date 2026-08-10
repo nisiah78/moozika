@@ -1,0 +1,43 @@
+[project]
+name = "moozika-omr-service"
+version = "0.1.0"
+description = "Reconnaissance / conversion musicale (sol-fa tonique, OMR portée à venir)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "python-multipart>=0.0.9",  # requis par FastAPI pour l'upload (/pdf/parse)
+    # OCR (PDF/image scanné) — le binaire système `tesseract` reste requis.
+    "pymupdf>=1.24",
+    "opencv-python-headless>=4.9",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0",
+    # YOLO + TrOCR pipeline (Pipeline B avancé — détection + lecture).
+    "ultralytics>=8.3",
+    "transformers>=4.40,<5.0",
+    "sentencepiece>=0.1.99",
+    "torch>=2.2",
+    # PaddleOCR = lecteur PRINCIPAL du sol-fa SCANNÉ (cf. app/pdf/paddle_ocr.py).
+    # CPU. oneDNN désactivé au runtime (FLAGS_use_mkldnn=0) — contourne un bug PIR.
+    "paddleocr>=3.0",
+    "paddlepaddle>=3.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+# Le cœur solfa + extract PDF typographié reste testable sans ces deps.
+
+[project.scripts]
+solfa = "app.solfa.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# Le cœur du parseur (app/solfa) n'a AUCUNE dépendance externe :
+# les tests tournent avec la stdlib seule.
+#   python -m unittest discover -s tests

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Moozika — Démo sol-fa → portée</title>
+  <!-- Démo de développement uniquement : OSMD est chargé depuis un CDN.
+       Le vrai viewer sera intégré dans apps/frontend (Next.js). -->
+  <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.8.7/build/opensheetmusicdisplay.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; max-width: 1000px; margin-inline: auto; }
+    h1 { font-size: 1.25rem; }
+    .row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+    label { display: flex; flex-direction: column; font-size: .8rem; gap: .25rem; }
+    textarea { width: 100%; min-height: 90px; font-family: ui-monospace, monospace; padding: .5rem; box-sizing: border-box; }
+    input, select, button { padding: .5rem; font-size: 1rem; }
+    button { cursor: pointer; }
+    #score { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; overflow-x: auto; }
+    #error { color: #b00020; white-space: pre-wrap; font-family: ui-monospace, monospace; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Moozika — sol-fa tonique → portée</h1>
+  <p><small>Format : <code>d r m f s l t</code> · octave <code>'</code> (haut) / <code>_</code> (bas) ·
+    <code>:</code> temps · <code>.</code> demi · <code>,</code> quart · <code>-</code> tenue · <code>|</code> mesure</small></p>
+
+  <label>Notation sol-fa
+    <textarea id="notation">d : d : s : s | l : l : s : - | f : f : m : m | r : r : d : -</textarea>
+  </label>
+
+  <div class="row">
+    <label>Tonique (Doh =)
+      <input id="tonic" value="C" size="4" />
+    </label>
+    <label>Octave du doh
+      <input id="doh" type="number" value="4" min="0" max="8" size="3" />
+    </label>
+    <label>Clé
+      <select id="clef"><option value="treble">Sol</option><option value="bass">Fa</option></select>
+    </label>
+    <label>API
+      <input id="api" value="http://localhost:8000" size="24" />
+    </label>
+    <button id="render">Afficher la portée</button>
+  </div>
+
+  <div class="row">
+    <label>… ou importer un PDF sol-fa
+      <input id="pdf" type="file" accept="application/pdf" />
+    </label>
+    <button id="renderPdf">Lire le PDF</button>
+  </div>
+
+  <div id="error"></div>
+  <div id="score"></div>
+
+  <script>
+    const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("score", { autoResize: true });
+    const errorEl = document.getElementById("error");
+
+    async function render() {
+      errorEl.textContent = "";
+      const body = {
+        notation: document.getElementById("notation").value,
+        tonic: document.getElementById("tonic").value,
+        doh_octave: Number(document.getElementById("doh").value),
+        clef: document.getElementById("clef").value,
+      };
+      try {
+        const res = await fetch(document.getElementById("api").value + "/solfa/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || ("HTTP " + res.status));
+        }
+        const data = await res.json();
+        await osmd.load(data.musicxml);
+        osmd.render();
+      } catch (e) {
+        errorEl.textContent = "Erreur : " + e.message +
+          "\n(le service doit tourner : uvicorn app.main:app --reload)";
+      }
+    }
+
+    async function renderPdf() {
+      errorEl.textContent = "";
+      const input = document.getElementById("pdf");
+      if (!input.files.length) { errorEl.textContent = "Choisir un fichier PDF."; return; }
+      const form = new FormData();
+      form.append("file", input.files[0]);
+      try {
+        const res = await fetch(document.getElementById("api").value + "/pdf/parse", {
+          method: "POST", body: form,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || ("HTTP " + res.status));
+        }
+        const data = await res.json();
+        await osmd.load(data.musicxml);
+        osmd.render();
+      } catch (e) {
+        errorEl.textContent = "Erreur : " + e.message +
+          "\n(le service doit tourner : uvicorn app.main:app --reload)";
+      }
+    }
+
+    document.getElementById("render").addEventListener("click", render);
+    document.getElementById("renderPdf").addEventListener("click", renderPdf);
+    render();
+  </script>
+</body>
+</html>
