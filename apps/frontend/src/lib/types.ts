@@ -58,12 +58,16 @@ export interface Measure {
 export interface VoiceModel {
   tonic: string;
   fifths: number;
+  /** ``major`` | ``minor`` (mineur la-based). */
+  mode?: "major" | "minor";
   timeSignature: { beats: number; beatType: number };
   divisions: number;
   clef: string;
   tempo: number | null;
   partName: string;
   measures: Measure[];
+  staffCount?: number;
+  midiProgram?: number | null;
   /** Octave scientifique du doh (défaut 4). */
   dohOctave?: number;
   /** Triolets annotés (3 notes sur 1 ou 2 temps, dans la mesure courante). */
@@ -94,7 +98,12 @@ export interface Voice {
 export interface ScoreResult {
   header: {
     title: string;
+    composer?: string;
+    /** Numéro / catalogue d'œuvre (MusicXML ``work-number``). */
+    work?: string;
     tonic: string;
+    mode?: "major" | "minor";
+    fifths?: number;
     timeSignature: { beats: number; beatType: number };
     /** BPM affiché (repère = tempoBeatUnit, éventuellement pointé). */
     tempo: number | null;
@@ -114,8 +123,12 @@ export interface ScoreResult {
 /** Réponse brute de omr-service `/musicxml/parse`. */
 export interface MusicXmlParseResponse {
   header: {
+    title?: string;
+    composer?: string;
+    work?: string;
     tonic: string;
     mode?: string;
+    fifths?: number;
     beats: number;
     beatType: number;
     tempo: number | null;

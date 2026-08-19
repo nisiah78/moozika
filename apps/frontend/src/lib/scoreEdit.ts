@@ -1,8 +1,15 @@
 import type { Measure, NoteEl, ScoreResult, TripletMark, Voice, VoiceModel } from "@/lib/types";
-import { modelToMusicxml } from "@/lib/scoresApi";
+import { modelToMusicxml, type ModelToMusicxmlMeta } from "@/lib/scoresApi";
 import type { AbsPitch } from "@/lib/staffPitch";
 import { syllableOfPitch, type ResolvedPitch } from "@/lib/movableDo";
 import { isTripletPairContinuation, tripletSpanBeatsAt } from "@/lib/triplets";
+import {
+  applyKeySignature,
+  keySignatureFromHeader,
+  type KeySignatureEntry,
+} from "@/lib/keySignatures";
+import { isPercussionVoice, editableVoiceIndices } from "@/lib/voiceAbbr";
+import { transposePitchesFromSyllables } from "@/lib/measureDirectives";
 
 export function cloneScore(result: ScoreResult): ScoreResult {
   return JSON.parse(JSON.stringify(result)) as ScoreResult;
@@ -263,6 +270,117 @@ export function splitVoiceForDivisi(
   return { score: next, newVoiceName };
 }
 
+export function renameVoice(score: ScoreResult, index: number, newName: string): ScoreResult {
+  const next = cloneScore(score);
+  const voice = next.voices[index];
+  if (!voice) return score;
+  const trimmed = newName.trim();
+  if (!trimmed) return score;
+  voice.name = trimmed;
+  voice.model.partName = trimmed;
+  return next;
+}
+
+export function removeVoice(score: ScoreResult, index: number): ScoreResult {
+  const next = cloneScore(score);
+  const voice = next.voices[index];
+  if (!voice) return score;
+  if (isPercussionVoice(voice)) {
+    throw new Error("Impossible de supprimer une portée de percussion");
+  }
+  const editable = editableVoiceIndices(next.voices);
+  if (editable.length <= 1) {
+    throw new Error("Au moins une portée doit rester");
+  }
+  next.voices.splice(index, 1);
+  return next;
+}
+
+export function applyGlobalKeyChange(
+  score: ScoreResult,
+  keyEntry: KeySignatureEntry,
+): ScoreResult {
+  const next = cloneScore(score);
+  const prev = keySignatureFromHeader(
+    next.header,
+    next.voices[0]?.model.fifths,
+  );
+  const { tonic, mode, fifths } = applyKeySignature(keyEntry);
+  const dohChanged = prev.doh !== tonic;
+
+  next.header.tonic = tonic;
+  next.header.mode = mode;
+  next.header.fifths = fifths;
+
+  for (const voice of next.voices) {
+    voice.model.tonic = tonic;
+    voice.model.fifths = fifths;
+    voice.model.mode = mode;
+    if (dohChanged) {
+      transposePitchesFromSyllables(
+        voice.model,
+        0,
+        tonic,
+        voice.model.dohOctave ?? 4,
+      );
+    }
+  }
+  return next;
+}
+
+export interface ScorePropertiesDraft {
+  title: string;
+  composer: string;
+  work: string;
+  keyId: string;
+  voices: Array<{ index: number; name: string; deleted?: boolean }>;
+}
+
+export function applyScoreProperties(
+  score: ScoreResult,
+  draft: ScorePropertiesDraft,
+  keyEntry: KeySignatureEntry,
+): { score: ScoreResult; needsRegen: boolean } {
+  let next = cloneScore(score);
+  let needsRegen = false;
+
+  next.header.title = draft.title.trim() || "Sans titre";
+  next.header.composer = draft.composer.trim() || undefined;
+  next.header.work = draft.work.trim() || undefined;
+
+  const prevKey = keySignatureFromHeader(next.header, next.voices[0]?.model.fifths);
+  if (prevKey.id !== keyEntry.id) {
+    next = applyGlobalKeyChange(next, keyEntry);
+    needsRegen = true;
+  }
+
+  const draftByIndex = new Map(draft.voices.map((v) => [v.index, v]));
+
+  const newVoices: Voice[] = [];
+  for (let i = 0; i < next.voices.length; i++) {
+    const row = draftByIndex.get(i);
+    if (row?.deleted) continue;
+    const voice = next.voices[i]!;
+    const trimmed = (row?.name ?? voice.name).trim();
+    if (trimmed !== voice.name) {
+      voice.name = trimmed;
+      voice.model.partName = trimmed;
+      needsRegen = true;
+    }
+    newVoices.push(voice);
+  }
+
+  if (newVoices.length !== next.voices.length) {
+    if (editableVoiceIndices(newVoices).length < 1) {
+      throw new Error("Au moins une portée doit rester");
+    }
+    next.voices = newVoices;
+    needsRegen = true;
+  }
+
+  return { score: next, needsRegen };
+}
+
 export async function regenerateFromModels(
   result: ScoreResult,
   voices: Voice[],
@@ -274,18 +392,26 @@ export async function regenerateFromModels(
   // avec divisions=12 (triolets), un to_solfa non aligné réécrivait
   // « d : r : m : f » en « d : - : - : r » et cassait les mesures voisines.
   const prevNotation = voices.map((v) => v.notation);
+  const meta: ModelToMusicxmlMeta = {
+    title: result.header.title || "",
+    composer: result.header.composer,
+    work: result.header.work,
+  };
   const converted = await modelToMusicxml(
     voices.map((v) => v.model),
-    result.header.title || "",
+    meta,
   );
   const outVoices = (converted.voices?.length ? converted.voices : voices).map(
     (v, i) => ({
       ...v,
+      name: voices[i]?.name ?? v.name,
       notation: prevNotation[i] ?? v.notation,
       model: {
         ...v.model,
         triplets: prevTriplets[i] ?? v.model.triplets,
         enterMeasure: prevEnter[i] ?? v.model.enterMeasure,
+        partName: voices[i]?.model.partName || v.model.partName,
+        mode: voices[i]?.model.mode ?? v.model.mode,
       },
     }),
   );

@@ -33,7 +33,7 @@ def _parse_time(spec: str | None) -> "tuple[int, int] | None":
 
 from .pdf import PdfSolfaError, pdf_to_score
 from .solfa import parse_solfa, to_musicxml, to_musicxml_multi
-from .solfa.from_musicxml import MusicXmlError, read_musicxml
+from .solfa.from_musicxml import MusicXmlError, read_musicxml, read_musicxml_metadata
 from .solfa.model import ScoreModel
 from .solfa.parser import ParseError
 from .solfa.to_solfa import to_solfa
@@ -86,6 +86,8 @@ class SolfaParseResponse(BaseModel):
 class FromModelsRequest(BaseModel):
     models: list[dict] = Field(..., description="Liste de ScoreModel.to_dict()")
     title: str = Field("", description="Titre de la partition MusicXML")
+    composer: str = Field("", description="Compositeur")
+    work: str = Field("", description="Numéro d'œuvre (work-number)")
 
 
 class FromModelsResponse(BaseModel):
@@ -120,7 +122,12 @@ def musicxml_from_models(req: FromModelsRequest) -> FromModelsResponse:
         raise HTTPException(status_code=422, detail="models[] est requis")
     try:
         models = [ScoreModel.from_dict(m) for m in req.models]
-        xml = to_musicxml_multi(models, title=req.title or "")
+        xml = to_musicxml_multi(
+            models,
+            title=req.title or "",
+            composer=req.composer or "",
+            work=req.work or "",
+        )
         voices = [
             {
                 "name": m.part_name,
@@ -274,11 +281,16 @@ async def recognize(
         if data.startswith(b"%PDF"):
             from .pdf.detect import detect_pdf_kind
             kind = detect_pdf_kind(data)
-            if kind == "solfa_text":
-                return pdf_to_score(data, tonic_override=tonic_override)
-            return staff_pdf_to_score(
-                data, filename=filename, time_override=_parse_time(time)
-            )
+            if kind == "staff_notation":
+                # Portée GRAVÉE déclarée → Audiveris direct (override de mesure possible).
+                return staff_pdf_to_score(
+                    data, filename=filename, time_override=_parse_time(time)
+                )
+            # solfa_text / scanned / unknown → routeur unifié pdf_to_score (comme
+            # /pdf/parse) : un SCAN peut être sol-fa OU portée → il tente le sol-fa
+            # (OCR) puis bascule Audiveris. Router « scanned » direct vers Audiveris
+            # cassait l'import d'un fihirana SCANNÉ (ex. mivavaha).
+            return pdf_to_score(data, tonic_override=tonic_override)
         return pdf_to_score(data, tonic_override=tonic_override)
     except (PdfSolfaError, StaffRecognizeError, MusicXmlError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -309,9 +321,14 @@ async def musicxml_parse(
         raise HTTPException(status_code=422, detail="Aucune voix exploitable")
 
     first = result.models[0]
+    meta = read_musicxml_metadata(data)
     header = {
+        "title": meta.get("title") or "",
+        "composer": meta.get("composer") or "",
+        "work": meta.get("work") or "",
         "tonic": first.tonic,
         "mode": first.mode,
+        "fifths": first.fifths,
         "beats": first.beats,
         "beatType": first.beat_type,
         "tempo": first.tempo,

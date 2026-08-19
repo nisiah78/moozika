@@ -67,7 +67,27 @@
       "Bash(node /tmp/casc/probe.mjs)",
       "Bash(npx tsc *)",
       "Bash(pip list *)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(cd *)",
+      "Bash(docker cp *)",
+      "Bash(docker restart *)",
+      "Bash(PYTHONPATH=. python3 /tmp/proto_rhythm2.py)",
+      "Bash(PYTHONPATH=. python3 /tmp/proto_full2.py)",
+      "Bash(curl -sS -m 60 -F \"file=@docs/11.pdf\" http://localhost:8000/recognize -w \"\\\\nHTTP %{http_code} %{time_total}s\\\\n\")",
+      "Read(//home/eric/docs/**)",
+      "Read(//home/eric/**)",
+      "Bash(PYTHONPATH=. python3 -)",
+      "Bash(grep -nA8 \"class Cell|class BarMeta\" apps/omr-service/app/solfa/lexer.py)",
+      "Bash(grep -nA25 \"def _fold_events\" apps/omr-service/app/solfa/parser.py)",
+      "Bash(PYTHONPATH=apps/omr-service python3 -)",
+      "Bash(awk 'NR>=220 && NR<=808' docs/proto_reconstruction.md)",
+      "Bash(awk '/^## Voix/{v=$0; getline; print v\" -> \"$0}')",
+      "Bash(docker exec *)",
+      "Bash(pip3 install *)",
+      "Bash(grep -nE \"^#{1,3} \" packages/shared-contracts/solfa-format.md)",
+      "WebFetch(domain:audiveris.github.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

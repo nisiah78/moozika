@@ -19,5 +19,12 @@ node_modules/
 .env.local
 *.log
 .DS_Store
-
-docs/*
+docs/**/*.pdf
+docs/**/*.png
+docs/**/*.jpg
+docs/**/*.jpeg
+docs/**/*.gif
+docs/**/*.bmp
+docs/**/*.tiff
+docs/**/*.ico
+docs/**/*.webp

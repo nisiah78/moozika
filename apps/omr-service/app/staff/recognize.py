@@ -16,7 +16,7 @@ from ..progress import ProgressFn, progress
 from ..solfa.from_musicxml import MusicXmlError, read_musicxml
 from ..solfa.model import Measure, NoteEl, ScoreModel
 from ..solfa.musicxml import to_musicxml_multi
-from ..solfa.rhythm import MeterError, classify_meter, split_duration
+from ..solfa.rhythm import DIVISIONS_PER_BEAT, MeterError, classify_meter, split_duration
 from ..solfa.to_solfa import to_solfa
 
 
@@ -28,14 +28,16 @@ def _pad_to_equal_measures(models: List[ScoreModel]) -> None:
         return
     target = max(len(m.measures) for m in models)
     for model in models:
+        # Échelle de grille du modèle : ×3 (noire=12) si triolets, sinon ×1.
+        scale = max(1, model.divisions // DIVISIONS_PER_BEAT)
         try:
-            cap = classify_meter(model.beats, model.beat_type).measure_divisions
+            cap = classify_meter(model.beats, model.beat_type).measure_divisions * scale
         except MeterError:
             cap = model.beats * model.divisions
         while len(model.measures) < target:
             notes = [
                 NoteEl(is_rest=True, duration=v, note_type=t, dots=d)
-                for v, t, d in split_duration(cap)
+                for v, t, d in split_duration(cap, scale)
             ]
             model.measures.append(
                 Measure(number=len(model.measures) + 1, notes=notes)
@@ -185,16 +187,16 @@ def staff_pdf_to_score(
     data: bytes,
     filename: str = "score.pdf",
     title: str = "",
-    min_cell: int = 2,
+    min_cell: int = 1,
     time_override: "tuple[int, int] | None" = None,
     on_chord: str = "split",
     on_progress: ProgressFn = None,
 ) -> dict:
     """PDF portée → même forme que pdf_to_score (header, voices, musicxml).
 
-    ``min_cell`` : maille rythmique du texte sol-fa (2 = croche, défaut, pour
-    absorber le jitter des durées Audiveris ; 1 = double-croche, fidèle mais
-    plus fragmenté).
+    ``min_cell`` : maille rythmique du texte sol-fa (1 = double-croche, défaut,
+    fidèle : sinon un temps « croche + 2 doubles-croches » perd la 3e note ;
+    2 = croche, plus lissé mais supprime toutes les doubles-croches).
     ``time_override`` : force la signature (ex. (10, 8)) — le mètre Audiveris est
     peu fiable ; à défaut, il est inféré du contenu (cf. read_musicxml).
     ``on_chord`` : 'split' (défaut) scinde les accords de portée en 2 voix pour
@@ -219,7 +221,12 @@ def staff_pdf_to_score(
         raise StaffRecognizeError("MusicXML Audiveris sans voix exploitable")
 
     models = consolidate_omr_voices(result.models)
-    ts = result.predominant_time or (models[0].beats, models[0].beat_type)
+    # Mètre d'OUVERTURE affiché = celui de la 1re mesure (model.beats, posé par
+    # from_musicxml), PAS le prédominant : sur une pièce à mètre variable (jubilate
+    # ouvre en 10/8 puis 6/8 puis 4/4), le prédominant 4/4 afficherait à tort 4/4
+    # en tête et un faux changement dès la m1. Les changements en cours de pièce
+    # restent portés par Measure.time_signature.
+    ts = (models[0].beats, models[0].beat_type)
     for m in models:
         m.beats, m.beat_type = ts[0], ts[1]
     _pad_to_equal_measures(models)

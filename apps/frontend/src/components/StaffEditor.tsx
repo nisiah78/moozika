@@ -18,6 +18,7 @@ import {
   makeNote,
   regenerateFromModels,
 } from "@/lib/scoreEdit";
+import { voiceAbbr } from "@/lib/voiceAbbr";
 import { NotePicker, type NotePickerChoice } from "@/components/NotePicker";
 import { MeasureDirectiveMenu } from "@/components/MeasureDirectiveMenu";
 import {
@@ -164,8 +165,8 @@ function VoiceStaff({
     <>
       {/* Étiquette de voix : collée à gauche (reste visible pendant le scroll). */}
       <div className="staff-label sticky left-0 z-30 flex w-fit items-center gap-1 bg-[#fffcf5] pr-3 text-[11px] font-semibold text-stone-600">
-        <span>
-          {voice.name}{" "}
+        <span title={voice.name}>
+          {voiceAbbr(voice.name)}{" "}
           <span className="font-normal text-stone-400">
             ({clef === "bass" ? "clé de fa" : "clé de sol"})
           </span>

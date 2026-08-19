@@ -18,16 +18,21 @@ export function musicXmlResponseToScoreResult(
   file: File,
   musicxml: string,
 ): ScoreResult {
-  const title = file.name.replace(/\.(xml|musicxml|mxl)$/i, "");
+  const fallbackTitle = file.name.replace(/\.(xml|musicxml|mxl)$/i, "");
+  const h = data.header;
   return {
     header: {
-      title,
-      tonic: data.header.tonic,
+      title: h.title?.trim() || fallbackTitle,
+      composer: h.composer?.trim() || undefined,
+      work: h.work?.trim() || undefined,
+      tonic: h.tonic,
+      mode: h.mode === "minor" ? "minor" : "major",
+      fifths: h.fifths ?? data.voices[0]?.model?.fifths ?? 0,
       timeSignature: {
-        beats: data.header.beats,
-        beatType: data.header.beatType,
+        beats: h.beats,
+        beatType: h.beatType,
       },
-      tempo: data.header.tempo,
+      tempo: h.tempo,
     },
     voices: data.voices,
     musicxml,

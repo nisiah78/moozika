@@ -208,6 +208,32 @@ def _parse_lyrics(
     return result
 
 
+def _attach_lyrics_to_notes(measure: Measure, cap: int, n_beats: int) -> None:
+    """Recopie ``measure.beat_lyrics[beat]`` sur la **1ʳᵉ note non-silence** de
+    chaque temps (règle `model.py`). Sans cela, `to_musicxml` n'émet aucun
+    `<lyric>` (le writer lit `NoteEl.lyric`, pas `beat_lyrics`). L'octave/rythme
+    ne sont pas touchés — on ne fait que porter la syllabe sur sa note.
+    """
+    if not measure.beat_lyrics or n_beats <= 0:
+        return
+    beat_size = cap // n_beats
+    if beat_size <= 0:
+        return
+    onset = 0
+    assigned: set = set()
+    for note in measure.notes:
+        beat = onset // beat_size
+        if (
+            not note.is_rest
+            and beat not in assigned
+            and beat < len(measure.beat_lyrics)
+            and measure.beat_lyrics[beat]
+        ):
+            note.lyric = measure.beat_lyrics[beat]
+            assigned.add(beat)
+        onset += note.duration
+
+
 def _enforce_measure_capacity(measures: List[Measure], caps: List[int]) -> None:
     """Validation de composition : chaque mesure vaut EXACTEMENT sa capacité en
     divisions (le total des notes + silences d'une mesure = sa capacité, ni plus
@@ -241,6 +267,7 @@ def parse_solfa(
     lyrics: Optional[str] = None,
     beats: Optional[int] = None,
     beat_type: int = 4,
+    mode: str = "major",
     lenient: bool = False,
     degrade: bool = False,
     triplets: Optional[List[dict]] = None,
@@ -275,6 +302,19 @@ def parse_solfa(
     except KeyError as exc:
         raise ParseError(str(exc)) from exc
 
+    # Garde-fou mode (§4.4 / §11.5) : le mineur (natural/harmonic/melodic, la-based)
+    # suit un autre patron d'intervalles et n'est PAS géré de bout en bout en v1.
+    # Le mode est une métadonnée d'entrée (comme la tonique), jamais deviné des
+    # syllabes. Tant que le mineur n'est pas livré → erreur EXPLICITE plutôt qu'une
+    # partition majeure fausse plaquée sur une mélodie mineure.
+    mode = (mode or "major").lower()
+    if mode != "major":
+        raise ParseError(
+            f"mode {mode!r} non géré en v1 (seul le majeur est livré) — cf. "
+            "music-theory.md §4.4. La mélodie doit être fournie en majeur, ou "
+            "attendre le support du mineur la-based."
+        )
+
     if beats is not None:
         try:
             meter: Optional[object] = classify_meter(beats, beat_type)
@@ -294,7 +334,14 @@ def parse_solfa(
         except (TypeError, ValueError) as exc:
             raise ParseError(f"marque de triolet invalide: {t!r}") from exc
 
-    needs_triplets = bool(triplet_tuples) or notation_has_triplet_beats(notation)
+    # Auto-détection des triolets (3 syllabes collées) : FIABLE en saisie/typographié,
+    # mais en mode ``degrade`` (OCR scanné) une voix grave dense bruitée produit de
+    # FAUX triolets (ex. ``rdt``) qui forcent la grille ×3 et rendent les durées
+    # binaires non représentables (``durée non représentable: 4`` → voix jetée). En
+    # degrade on n'active donc les triolets que s'ils sont MARQUÉS explicitement.
+    needs_triplets = bool(triplet_tuples) or (
+        not degrade and notation_has_triplet_beats(notation)
+    )
     # Grille ×3 pour que chaque temps soit divisible par 3 (noire = 12).
     division_scale = 3 if needs_triplets else 1
 
@@ -369,11 +416,33 @@ def parse_solfa(
                 measures[mi].key_tonic = bar.key_tonic
                 measures[mi].key_fifths = fifths_of(bar.key_tonic)
 
-    # Association des paroles aux mesures (par pulsation, pas par note)
+    # Association des paroles aux mesures (par pulsation) PUIS report sur la note
+    # portant chaque temps, pour que le MusicXML émette bien les <lyric> (§2.1).
     if lyrics:
         beat_lyrics_by_measure = _parse_lyrics(lyrics, pulses, len(measures))
         for mi, measure in enumerate(measures):
             measure.beat_lyrics = beat_lyrics_by_measure[mi]
+            _attach_lyrics_to_notes(measure, _cap_at(caps, mi), pulses)
+
+    # Diagnostic d'EXCÉDENT (§7.3) : en mètre constant, une barre |...| qui porte
+    # plus de pulsations que le mètre supposé n'est pas complétée mais déborde en
+    # liaisons sur la mesure suivante (désalignement SILENCIEUX). On le signale au
+    # lieu de le taire. (Le déficit, lui, est légal — anacrouse/fin de phrase — et
+    # déjà complété par un silence `uncertain`.)
+    warnings: List[str] = []
+    if not has_meter_changes and pulses > 0:
+        for bi, bar in enumerate(bars):
+            if bar.pulses > pulses:
+                warnings.append(
+                    f"mesure {bi + 1} : {bar.pulses} temps pour un mètre à "
+                    f"{pulses} — {bar.pulses - pulses} temps de trop (contenu "
+                    f"excédentaire à vérifier)"
+                )
+    # Saisie manuelle (ni OCR dégradé, ni tolérant) : l'excédent est une faute →
+    # erreur explicite. Chemins bruités (OCR/PDF) : on produit la partition ET on
+    # remonte l'avertissement pour correction dans l'interface.
+    if warnings and not (degrade or lenient):
+        raise ParseError("; ".join(warnings))
 
     return ScoreModel(
         tonic=key,
@@ -385,4 +454,8 @@ def parse_solfa(
         measures=measures,
         tempo=tempo,
         part_name=part_name,
+        mode=mode,
+        doh_octave=doh_octave,
+        has_lyric=bool(lyrics),
+        warnings=warnings,
     )

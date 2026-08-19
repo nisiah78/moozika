@@ -1,0 +1,7 @@
+{
+  "_comment": "Seuil du Niveau 2 (0-10). Calibre le 2026-08-19 sur mesure reelle : api 8.81, omr 9.10, audiveris 9.32, frontend 9.96. Le Niveau 1 (tests, compilation) bloque independamment de ce fichier.",
+  "score_threshold": 8.0,
+  "phpstan_level": 5,
+  "score_denominator": "changed_lines",
+  "_score_denominator_help": "changed_lines = lignes ajoutees par le diff (sensible, mesure ta modification) | loc = fichiers entiers (indulgent)"
+}

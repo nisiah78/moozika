@@ -273,9 +273,23 @@ class ScoreModel:
     part_name: str = "Sol-fa"     # nom de la partie (ex. Soprano)
     mode: str = "major"           # 'major' | 'minor' (mineur = la-based)
     doh_octave: int = 4           # octave scientifique du doh (registre de réf.)
+    # Signaux STRUCTURELS de rôle (voix chantée vs accompagnement). Renseignés par
+    # `from_musicxml` depuis le MusicXML source ; servent au classement de rôle
+    # (cf. staff/consolidate). staff_count>=2 = grand portée clavier = accompagnement.
+    staff_count: int = 1
+    midi_program: Optional[int] = None
+    has_lyric: bool = False
+    # Marques de triolet (repère front : {startMeasure, startBeat, spanBeats},
+    # 0-based) dérivées des <time-modification> à l'import portée — sans elles le
+    # front rend un triolet comme 3 notes « en trop » sur un temps binaire.
+    triplets: List[dict] = field(default_factory=list)
+    # Avertissements de composition NON bloquants (ex. mesure excédentaire) — le
+    # parseur ne fausse pas la partition en silence : il la produit ET signale le
+    # défaut, pour affichage/correction dans l'interface (cf. invariant §7.3).
+    warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "tonic": self.tonic,
             "mode": self.mode,
             "fifths": self.fifths,
@@ -285,8 +299,16 @@ class ScoreModel:
             "clef": self.clef,
             "tempo": self.tempo,
             "partName": self.part_name,
+            "staffCount": self.staff_count,
+            "midiProgram": self.midi_program,
+            "hasLyric": self.has_lyric,
             "measures": [m.to_dict() for m in self.measures],
         }
+        if self.triplets:
+            d["triplets"] = self.triplets
+        if self.warnings:
+            d["warnings"] = self.warnings
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "ScoreModel":
@@ -305,4 +327,10 @@ class ScoreModel:
             part_name=str(d.get("partName", "Sol-fa")),
             mode=str(d.get("mode", "major")),
             doh_octave=int(d.get("dohOctave", 4)),
+            staff_count=int(d.get("staffCount", 1)),
+            midi_program=(
+                int(d["midiProgram"]) if d.get("midiProgram") is not None else None
+            ),
+            has_lyric=bool(d.get("hasLyric", False)),
+            triplets=list(d.get("triplets") or []),
         )

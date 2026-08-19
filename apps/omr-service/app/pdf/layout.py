@@ -19,9 +19,9 @@ import re
 import statistics
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from .extract import Run
+from .extract import Barline, Run
 from ..solfa.keys import CHROMATIC, DIATONIC
 from ..solfa.lexer import LexError, _parse_beat
 from ..solfa.rhythm import DIVISIONS_PER_BEAT
@@ -38,6 +38,9 @@ _BAR_CHAR = "|"
 _VALID_CORES = set(DIATONIC) | set(CHROMATIC)
 _SYLLABLE_RE = re.compile(r"^([a-zA-Z]+)([',_]*)$")
 _SATB = ["Soprano", "Alto", "Tenor", "Bass"]
+# Nombre de voix plausible d'une feuille (SATB + marge divisi). Au-delà, la
+# segmentation des systèmes est considérée effondrée (cf. _clamp_n_voices).
+_MAX_VOICES = 8
 
 
 @dataclass
@@ -55,6 +58,9 @@ class SolfaDocument:
     header: Header
     voices: List[str] = field(default_factory=list)
     voice_names: List[str] = field(default_factory=list)
+    # Reconstruction par barres vectorielles (grille à mètre variable) : notation
+    # dégradable (bruit de grille) → l'aval parse en mode ``degrade``.
+    degrade_hint: bool = False
 
 
 def _cluster_rows(runs: List[Run]) -> List[List[Run]]:
@@ -501,6 +507,128 @@ def _infer_n_voices(systems: List[List[List[Run]]]) -> int:
     return Counter(sizes).most_common(1)[0][0]
 
 
+def _modal_small_size(systems: List[List[List[Run]]]) -> Optional[int]:
+    """Taille modale des systèmes plausibles (2..MAX). None si aucun."""
+    sizes = [len(s) for s in systems if 2 <= len(s) <= _MAX_VOICES]
+    return Counter(sizes).most_common(1)[0][0] if sizes else None
+
+
+def _row_sounding_notes(row: List[Run]) -> int:
+    """Nombre de syllabes sol-fa SONNANTES d'une ligne (hors `:` `.` `,` `-` `0`,
+    paroles). Sert à distinguer une VOIX mélodique d'une ligne d'accord tenu."""
+    n = 0
+    for t in merge_close_glyphs(row):
+        for atom in re.split(r"[:!;.,\s]+", t.text):
+            m = _SYLLABLE_RE.match(atom)
+            if m and m.group(1).lower() in _VALID_CORES:
+                n += 1
+    return n
+
+
+def _effective_voice_count(systems: List[List[List[Run]]]) -> int:
+    """Nombre de voix = compte à texture pleine (``_supported_voice_count``, ex. 4)
+    RELEVÉ à un système plus grand **seulement s'il est MÉLODIQUE** (chaque ligne
+    chante une phrase = vraie voix, ex. section 5 voix de 11.pdf), et NON un simple
+    accord final (une note tenue par ligne, ex. accord à 6 de the-lord → reste 4)."""
+    best = _supported_voice_count(systems)
+    for s in systems:
+        if len(s) <= best or len(s) > _MAX_VOICES:
+            continue
+        melodic = sum(1 for row in s if _row_sounding_notes(row) >= 2)
+        if melodic >= len(s) - 1:  # ~toutes les lignes sont mélodiques → vraie texture
+            best = len(s)
+    return best
+
+
+def _supported_voice_count(
+    systems: List[List[List[Run]]], min_support: int = 2
+) -> int:
+    """Nombre de voix = plus GRAND nombre de lignes d'un système RÉCURRENT (vu
+    ≥ min_support fois), borné à _MAX_VOICES — la « texture pleine ». Contrairement
+    au MODE (``_infer_n_voices``), une texture pleine minoritaire fixe quand même le
+    compte : ex. OCR où seuls quelques systèmes lisent les 4 lignes SATB → 4, pas 2
+    (mivavaha). Sur un corpus régulier (tous systèmes à 4 lignes) → 4, inchangé."""
+    sizes = [len(s) for s in systems]
+    counts = Counter(sizes)
+    supported = [
+        sz for sz, ct in counts.items()
+        if 2 <= sz <= _MAX_VOICES and ct >= min_support
+    ]
+    if supported:
+        return max(supported)
+    plausible = [sz for sz in sizes if 2 <= sz <= _MAX_VOICES]
+    if plausible:
+        return max(plausible)
+    return _infer_n_voices(systems)  # dernier repli (tout 1-ligne / tout effondré)
+
+
+def _split_oversized_systems(
+    systems: List[List[List[Run]]],
+) -> List[List[List[Run]]]:
+    """Un système de taille ≈ k·m (m = taille modale d'un système, k≥2) est en
+    fait plusieurs bandes SATB que le seuil global n'a pas séparées : on le
+    redécoupe en tranches consécutives de m lignes (ordre y = ordre de lecture).
+    Sans effet quand tous les systèmes font déjà la taille modale."""
+    m = _modal_small_size(systems)
+    if not m or m < 2:
+        return systems
+    out: List[List[List[Run]]] = []
+    for s in systems:
+        if len(s) >= 2 * m:
+            out.extend(s[i : i + m] for i in range(0, len(s), m))
+        else:
+            out.append(s)
+    return out
+
+
+def _clamp_n_voices(raw_n: int, systems: List[List[List[Run]]]) -> int:
+    """Borne le nombre de voix à une valeur plausible (SATB + divisi). Si le brut
+    est aberrant (segmentation effondrée → nombre de lignes total), on retombe sur
+    la période modale ; sinon on ÉCHOUE explicitement plutôt que d'émettre N voix
+    fausses (cf. CLAUDE.md : dégrader explicitement, pas de partition fausse)."""
+    if 1 <= raw_n <= _MAX_VOICES:
+        return raw_n
+    period = _modal_small_size(systems)
+    if period is not None:
+        return period
+    raise ValueError(
+        f"structure de voix non fiable (≈{raw_n} lignes) — segmentation des "
+        "systèmes abandonnée ; vérifier la mise en page du PDF"
+    )
+
+
+def _segment_systems(
+    voice_rows: List[List[Run]], y_descending: bool
+) -> Tuple[List[List[List[Run]]], int]:
+    """Lignes de voix -> (systèmes, n_voices), robuste et sans régression.
+
+    1) seuil FIXE d'abord (comportement historique — les recueils déjà corrects le
+       restent) ; 2) si le compte est aberrant (>MAX : segmentation effondrée, ex.
+       SATB dense/multi-pages), on RÉESSAIE au seuil ADAPTATIF ; 3) dans les deux
+       cas, redécoupe des systèmes surdimensionnés puis clamp final."""
+    if not voice_rows:
+        return [], 0
+    systems = _split_oversized_systems(
+        _group_systems(voice_rows, y_descending=y_descending)
+    )
+    # NB : ``_effective_voice_count`` (n_voices variable 4/5) est DISPONIBLE mais
+    # PAS branché : sur 11.pdf il expose un scramble de la basse (systèmes
+    # basse-sous-paroles → gap 2·unit → la basse tombe sur la 5ᵉ bande au lieu de
+    # la 4ᵉ). Tant que l'assignation par position n'est pas robuste aux gaps
+    # variables (paroles intercalées), on reste à texture pleine soutenue (4).
+    n = _supported_voice_count(systems)
+    if not (1 <= n <= _MAX_VOICES):
+        gap = _adaptive_system_gap(voice_rows)
+        if gap:
+            alt = _split_oversized_systems(
+                _group_systems(voice_rows, y_descending=y_descending, system_gap=gap)
+            )
+            n_alt = _supported_voice_count(alt)
+            if 1 <= n_alt <= _MAX_VOICES:
+                systems, n = alt, n_alt
+    return systems, _clamp_n_voices(n, systems)
+
+
 def _rest_measure(beats: int) -> List[str]:
     return [""] * max(beats, 1)
 
@@ -901,8 +1029,17 @@ _MULTI_COMMA_RE = re.compile(r",{2,}")
 _GLUED_HOLD_RE = re.compile(r"(?<=[A-Za-z',_])-")
 
 
+# Demi-temps '.' perdu par l'OCR dans le triplet « ,.,» : sur une note grave, le
+# motif « note, . , » (octave grave + demi-temps + silence de quart) est rendu
+# « note, , » (deux virgules séparées par un trou, le '.' central absent). Sans le
+# '.', les deux moitiés du temps fusionnent (demi-temps → quart). On restaure le '.'.
+# Fréquent sur Alto/Basse (octave grave sur chaque note) → « demi devient quart ».
+_LOST_HALF_DOT_RE = re.compile(r",\s+,")
+
+
 def _norm_ocr_solfa(text: str) -> str:
     t = text.translate(_OCR_DASHES).replace("1", "l")
+    t = _LOST_HALF_DOT_RE.sub(",.,", t)   # restaure le '.' demi-temps mangé dans « ,.,»
     t = _MULTI_COMMA_RE.sub(",", t)
     return _GLUED_HOLD_RE.sub(":-", t)
 
@@ -1032,7 +1169,8 @@ def _build_document_from_lines(runs: List[Run]) -> SolfaDocument:
     systems = _group_systems(voice_rows, y_descending=y_descending, system_gap=sys_gap)
     if not systems:
         raise ValueError("aucune ligne de voix détectée dans le PDF")
-    n_voices = _infer_n_voices(systems)
+    systems = _split_oversized_systems(systems)
+    n_voices = _clamp_n_voices(_supported_voice_count(systems), systems)
     if n_voices <= 0:
         raise ValueError("aucune voix exploitable dans le PDF")
 
@@ -1051,7 +1189,389 @@ def _build_document_from_lines(runs: List[Run]) -> SolfaDocument:
     return SolfaDocument(header=header, voices=voices, voice_names=names)
 
 
-def build_document(runs: List[Run]) -> SolfaDocument:
+def _cluster_x(xs: List[float], tol: float = 10.0) -> List[float]:
+    out: List[float] = []
+    for x in sorted(xs):
+        if not out or x - out[-1] > tol:
+            out.append(x)
+        else:
+            out[-1] = (out[-1] + x) / 2.0
+    return out
+
+
+def _barlines_for_system(system: List[List[Run]], barlines: List[Barline]) -> List[float]:
+    """Frontières de mesure (x) d'un système : barres verticales dont l'étendue y
+    recouvre la bande du système, dédoublonnées."""
+    ys = [r.y for row in system for r in row]
+    if not ys:
+        return []
+    ymin, ymax = min(ys), max(ys)
+    xs = [b.x for b in barlines if not (b.y1 < ymin - 5 or b.y0 > ymax + 5)]
+    return _cluster_x(xs)
+
+
+def _segment_by_enclosing_barlines(
+    voice_rows: List[List[Run]], barlines: List[Barline]
+) -> List[List[List[Run]]]:
+    """Systèmes définis par les BARRES ENGLOBANTES (cadre gauche pleine hauteur).
+
+    Une ligne de voix appartient au système dont l'étendue y de la barre gauche la
+    contient. Contrairement à ``_segment_systems`` (écart + clamp au mode), ceci ne
+    JETTE aucune ligne et garde les textures variables (4/5/3/1 voix) INTACTES —
+    corrige les systèmes divisi où une 5ᵉ ligne (basse) était détachée.
+
+    Repli (aucune barre englobante exploitable) : ``[]`` → l'appelant garde
+    ``_segment_systems``."""
+    if not barlines or not voice_rows:
+        return []
+    xmin = min(b.x for b in barlines)
+    left = [b for b in barlines if b.x <= xmin + 8.0]
+    spans = sorted((min(b.y0, b.y1), max(b.y0, b.y1)) for b in left)
+    merged: List[List[float]] = []
+    for lo, hi in spans:
+        if merged and lo <= merged[-1][1] + 3.0:
+            merged[-1][1] = max(merged[-1][1], hi)
+        else:
+            merged.append([lo, hi])
+    if not merged:
+        return []
+    merged.sort(key=lambda s: -s[1])  # haut (y grand) → bas
+    systems: List[List[List[Run]]] = [[] for _ in merged]
+    placed_any = False
+    for row in voice_rows:
+        y = row[0].y
+        for i, (lo, hi) in enumerate(merged):
+            if lo - 3.0 <= y <= hi + 3.0:
+                systems[i].append(row)
+                placed_any = True
+                break
+    if not placed_any:
+        return []
+    for s in systems:
+        s.sort(key=lambda r: -r[0].y)  # haut → bas
+    return [s for s in systems if s]
+
+
+def _is_solfa_voice_row(row: List[Run]) -> bool:
+    """Ligne de VOIX (chemin position) : porte des séparateurs de temps ET est
+    majoritairement sol-fa. Exclut l'entête (``Key F Majeur : 2/4``, qui a un ``:``),
+    les paroles et les dynamiques (lettres hors alphabet sol-fa). C'est la règle
+    « une porté a des séparateurs ; sinon c'est parole/dynamique » appliquée."""
+    txt = "".join(t.text for t in row)
+    if txt.count(":") + txt.count("!") < 2:
+        return False
+    letters = [c for c in txt.lower() if c.isalpha()]
+    if not letters:
+        return False
+    nonsolfa = sum(1 for c in letters if c not in _SOLFA_LETTERS)
+    return nonsolfa <= 0.2 * len(letters)
+
+
+def _segment_by_voice_gaps(rows: List[List[Run]]) -> List[List[List[Run]]]:
+    """Systèmes = suites de lignes-VOIX groupées par écart vertical (≤ 2.3×unité).
+    L'unité = plus petit écart RÉCURRENT (espacement voix-à-voix), robuste au canon
+    (parole entre voix → 2×unité, gardée) et aux frontières de système (>2.3×unité).
+    Détecte les voix par ``_is_solfa_voice_row`` (séparateurs + sol-fa), donc gère
+    labels de voix (``1'``/``2''``), double chœur, texture variable — sans supposer
+    l'ordre S/A/T/B."""
+    vrows = [r for r in rows if _is_solfa_voice_row(r)]
+    if len(vrows) < 2:
+        return []
+    ys = [r[0].y for r in vrows]
+    gaps = [abs(ys[i] - ys[i + 1]) for i in range(len(ys) - 1) if abs(ys[i] - ys[i + 1]) > 2]
+    if not gaps:
+        return []
+    gc = Counter(round(g) for g in gaps)
+    recurring = [g for g, c in gc.items() if c >= 2]
+    unit = min(recurring) if recurring else min(gaps)
+    if unit <= 0:
+        return []
+    systems: List[List[List[Run]]] = [[vrows[0]]]
+    for i in range(1, len(vrows)):
+        if abs(ys[i] - ys[i - 1]) <= 2.3 * unit:
+            systems[-1].append(vrows[i])
+        else:
+            systems.append([vrows[i]])
+    return systems
+
+
+def _try_position_based(
+    rows: List[List[Run]], barlines: List[Barline], header: Header
+) -> Optional[SolfaDocument]:
+    """Chemin POSITION (partitions multi-voix >4 : divisi TAFAHOANA, double chœur
+    MPANJAKAN). Segmente par écart de voix, lit les mesures aux barres, assigne les
+    voix par rang vertical (haut→bas, nommées « Voix N » — l'utilisateur nomme les
+    portées dans l'UI). GARDÉ : ne se déclenche que si >4 voix soutenues ET parse
+    propre (≥70 %) ; sinon None → chemins existants (aucune régression sur ≤4 voix)."""
+    if not barlines:
+        return None
+    systems = _segment_by_voice_gaps(rows)
+    if not systems:
+        return None
+    n_voices = _supported_voice_count(systems)
+    if n_voices < 5:  # ≤4 voix : les chemins existants suffisent (pas de bénéfice)
+        return None
+    notations, _meter_varies, dominant = _build_from_barlines(
+        systems, barlines, n_voices, strict_topdown=True
+    )
+    nonempty = [n for n in notations if n.strip()]
+    if len(nonempty) < 5:
+        return None
+    from ..solfa.parser import parse_solfa, ParseError  # noqa: PLC0415
+    ok = 0
+    for n in nonempty:
+        try:
+            parse_solfa(n, tonic=header.tonic or "C", degrade=True, lenient=True)
+            ok += 1
+        except (ParseError, ValueError):
+            pass
+    if ok < 0.7 * len(nonempty):
+        return None
+    if dominant and dominant != 4:
+        header.beats, header.beat_type = dominant, 4
+    names = [f"Voix {i + 1}" for i in range(n_voices)]
+    return SolfaDocument(
+        header=header, voices=notations, voice_names=names, degrade_hint=True
+    )
+
+
+# Lettres autorisées dans une syllabe sol-fa (diatonique + chromatique -i/-a/-e/-o).
+_SOLFA_LETTERS = set("adefilmorst")
+
+
+def _is_annotation_token(text: str) -> bool:
+    """Vrai si le jeton est une ANNOTATION (mot hors sol-fa : ``instr.``, ``Key``,
+    ``Music``, un label de système ``K``/``M``…) et non une note. Critère : une
+    lettre hors de l'alphabet sol-fa (ex. ``n`` dans ``instr.``). Sans ça un mot
+    d'annotation entre deux barres devient une fausse mesure à 1 temps (« 1/4 »)."""
+    letters = [c for c in text.lower() if c.isalpha()]
+    if not letters:
+        return False  # que des marques/chiffres/séparateurs → pas une annotation-mot
+    return any(c not in _SOLFA_LETTERS for c in letters)
+
+
+def _measure_cell_string(tokens: List[Run]) -> str:
+    """Chaîne de notation d'UNE mesure à partir de ses jetons (déjà porteurs des
+    séparateurs `:`/`.`/`,`). Les notes JUXTAPOSÉES d'un même demi (glyphes fusionnés
+    ``m  f`` = 2 double-croches) sont CONCATÉNÉES (``mf``), PAS transformées en
+    demi-temps ``m.f`` — sinon 2 quarts deviennent 2 demis (durées doublées). Le
+    lexer relit la juxtaposition via ``_split_syllable_atoms``. Les jetons
+    d'ANNOTATION (``instr.``, ``Key``…) sont écartés (sinon fausse mesure « 1/4 »)."""
+    parts = [
+        re.sub(r"\s+", "", t.text.strip())
+        for t in tokens
+        if t.text.strip() and not _is_annotation_token(t.text)
+    ]
+    return " ".join(parts)
+
+
+def _beats_in_measure(measure_str: str) -> int:
+    """Nombre de temps = segments séparés par `:`/`!`/`;` (silences vides inclus)."""
+    if not measure_str.strip():
+        return 0
+    return len(re.split(r"[:!;]", measure_str))
+
+
+def _voice_notation_from_barlines(
+    system_measures: List[List[str]],
+) -> str:
+    """Assemble les mesures d'une voix (à travers les systèmes) en notation, avec
+    un marqueur ``(N/4)`` là où le nombre de temps CHANGE (mètre variable)."""
+    parts: List[str] = []
+    prev: Optional[int] = None
+    for measures in system_measures:
+        for ms in measures:
+            beats = _beats_in_measure(ms)
+            if beats and beats != prev:
+                parts.append(f"({beats}/4) {ms}")
+                prev = beats
+            else:
+                parts.append(ms)
+    return " | ".join(parts)
+
+
+def _split_measure_string(ms: str, dominant: int) -> List[str]:
+    """Découpe une mesure en tranches de ``dominant`` temps (barre de mesure
+    manquante en mètre constant : k·dominant temps = k mesures)."""
+    beats = [b.strip() for b in re.split(r"[:!;]", ms)]
+    return [" : ".join(beats[i : i + dominant]) for i in range(0, len(beats), dominant)]
+
+
+def _split_supermeter(
+    per_voice_measures: List[List[List[str]]], dominant: int
+) -> List[List[List[str]]]:
+    """Récupère les barres de mesure MANQUANTES : en mètre constant, une mesure de
+    k·dominant temps (k≥2) est en réalité k mesures → on la scinde au mètre. Une
+    vraie mesure hors mètre (ex. 3/4 dans du 2/4, non multiple) est conservée. Le
+    découpage est COHÉRENT entre voix (k pris sur le max de temps ; une voix plus
+    courte est complétée de mesures de silence)."""
+    if dominant < 2 or not per_voice_measures:
+        return per_voice_measures
+    nv = len(per_voice_measures)
+    out: List[List[List[str]]] = [[] for _ in range(nv)]
+    n_sys = len(per_voice_measures[0])
+    for si in range(n_sys):
+        n_meas = max((len(per_voice_measures[v][si]) for v in range(nv)), default=0)
+        sys_out: List[List[str]] = [[] for _ in range(nv)]
+        for mi in range(n_meas):
+            cells = [
+                per_voice_measures[v][si][mi]
+                if mi < len(per_voice_measures[v][si]) else ""
+                for v in range(nv)
+            ]
+            beats = max((_beats_in_measure(c) for c in cells), default=0)
+            k = beats // dominant if (beats >= 2 * dominant and beats % dominant == 0) else 1
+            for v in range(nv):
+                if k == 1:
+                    sys_out[v].append(cells[v])
+                    continue
+                chunks = _split_measure_string(cells[v], dominant)
+                while len(chunks) < k:
+                    chunks.append("")  # voix plus courte → silences (cohérence k)
+                sys_out[v].extend(chunks[:k])
+        for v in range(nv):
+            out[v].append(sys_out[v])
+    return out
+
+
+def _estimate_unit_gap(systems: List[List[List[Run]]]) -> float:
+    """Écart vertical MÉDIAN entre deux lignes adjacentes d'un système (= 1 voix).
+    Les voix adjacentes dominent (sauts rares) → la médiane donne l'unité fiable."""
+    gaps: List[float] = []
+    for s in systems:
+        ys = sorted((row[0].y for row in s), reverse=True)  # haut → bas
+        gaps.extend(abs(ys[i] - ys[i - 1]) for i in range(1, len(ys)))
+    gaps = [g for g in gaps if g > 0.5]
+    return statistics.median(gaps) if gaps else 0.0
+
+
+def _assign_bands(
+    system: List[List[Run]], n_voices: int, unit: float
+) -> Dict[int, int]:
+    """Assigne chaque ligne d'un système à une BANDE de voix (0=soprano en haut …
+    n-1=basse en bas) par POSITION VERTICALE, pas par index. Une bande sans ligne
+    = voix au repos. Ancrage haut (le soprano ne se tait quasi jamais) : la ligne
+    du haut = bande 0, un saut ≈2·unit révèle une voix intérieure au repos.
+
+    Texture PLEINE (m == n_voices) → identité, donc AUCUNE régression sur les
+    recueils réguliers (tous systèmes à n_voices lignes)."""
+    rows = sorted(range(len(system)), key=lambda ri: system[ri][0].y, reverse=True)
+    if len(rows) == n_voices or unit <= 0 or len(rows) <= 1:
+        return {i: rows[i] for i in range(min(n_voices, len(rows)))}
+    top_y = system[rows[0]][0].y
+    out: Dict[int, int] = {}
+    for ri in rows:
+        band = round((top_y - system[ri][0].y) / unit)
+        band = max(0, min(n_voices - 1, band))
+        while band in out and band < n_voices - 1:  # collision → bande libre suivante
+            band += 1
+        if band not in out:
+            out[band] = ri
+    return out
+
+
+def _build_from_barlines(
+    systems: List[List[List[Run]]], barlines: List[Barline], n_voices: int,
+    *, strict_topdown: bool = False,
+) -> Tuple[List[str], bool, int]:
+    """Reconstruit chaque voix depuis les barres vectorielles (mesures) + les
+    séparateurs texte (temps/subdivisions). Renvoie (notations, mètre_variable).
+
+    Le rythme vient des séparateurs déjà présents dans le texte, pas de la
+    géométrie des écarts x (qui échoue sur une grille fine → durées doublées).
+
+    ``strict_topdown`` : la bande i = i-ème ligne depuis le haut (les systèmes issus
+    de la segmentation par barres englobantes sont déjà triés haut→bas). Évite le
+    scramble de la version gap de ``_assign_bands`` sur les systèmes basse-sous-
+    paroles (écart variable) — chaque ligne garde son rang vertical."""
+    unit = _estimate_unit_gap(systems)
+    per_voice_measures: List[List[List[str]]] = [[] for _ in range(n_voices)]
+    for system in systems:
+        bx = _barlines_for_system(system, barlines)
+        if len(bx) < 2:
+            continue  # pas de barres exploitables → système ignoré (repli global)
+        n_meas = len(bx) - 1
+        if strict_topdown:
+            bands = {i: i for i in range(min(n_voices, len(system)))}
+        else:
+            bands = _assign_bands(system, n_voices, unit)  # bande(voix) → ligne
+        for band in range(n_voices):
+            ri = bands.get(band)
+            if ri is None:
+                # Voix au repos sur ce système → mesures de SILENCE (garde le compte
+                # de mesures égal entre voix ; « lit comme un musicien » : la portée
+                # existe même muette).
+                per_voice_measures[band].append(["" for _ in range(n_meas)])
+                continue
+            toks = sorted(merge_close_glyphs(system[ri]), key=lambda r: r.x)
+            # Garder TOUTES les mesures (même vides = silence) → comptes alignés.
+            measures = [
+                _measure_cell_string(
+                    [t for t in toks if bx[i] - 2 <= t.x < bx[i + 1] - 2]
+                )
+                for i in range(n_meas)
+            ]
+            per_voice_measures[band].append(measures)
+    # Mètre dominant AVANT split (mode des temps/mesure), puis récupération des
+    # barres manquantes (k·dominant temps = k mesures) — corrige les faux (4/4)
+    # dans du 2/4 et récupère les mesures perdues.
+    all_beats = [
+        _beats_in_measure(ms)
+        for vm in per_voice_measures for measures in vm for ms in measures
+        if _beats_in_measure(ms) > 0
+    ]
+    dominant = Counter(all_beats).most_common(1)[0][0] if all_beats else 0
+    per_voice_measures = _split_supermeter(per_voice_measures, dominant)
+
+    notations = [_voice_notation_from_barlines(m) for m in per_voice_measures]
+    all_beats2 = [
+        _beats_in_measure(ms)
+        for vm in per_voice_measures for measures in vm for ms in measures
+        if _beats_in_measure(ms) > 0
+    ]
+    meter_varies = len(set(all_beats2)) >= 2
+    return notations, meter_varies, dominant
+
+
+def _try_build_from_barlines(
+    systems: List[List[List[Run]]],
+    barlines: List[Barline],
+    n_voices: int,
+    header: Header,
+    *, strict_topdown: bool = False,
+) -> Optional[SolfaDocument]:
+    """Chemin barres vectorielles, SEULEMENT si (a) un changement de mesure est
+    détecté (ce que le chemin actuel ne sait pas représenter) ET (b) toutes les
+    voix se parsent proprement. Sinon None → repli sur le chemin actuel (aucune
+    régression sur les recueils à mètre constant / sans barres)."""
+    notations, meter_varies, dominant = _build_from_barlines(
+        systems, barlines, n_voices, strict_topdown=strict_topdown
+    )
+    if not meter_varies or not any(n.strip() for n in notations):
+        return None
+    # Parse d'essai (mode dégradé : la grille peut porter du bruit) : si une voix
+    # non vide échoue, on renonce à ce chemin.
+    from ..solfa.parser import parse_solfa, ParseError  # noqa: PLC0415
+    for n in notations:
+        if not n.strip():
+            continue
+        try:
+            parse_solfa(n, tonic=header.tonic or "C", degrade=True, lenient=True)
+        except (ParseError, ValueError):
+            return None
+    # Mètre d'en-tête = mesure dominante (l'en-tête n'a pas de signature explicite ;
+    # sans ça il resterait à 4/4 alors que la pièce est p.ex. en 2/4).
+    if dominant and dominant != 4:
+        header.beats, header.beat_type = dominant, 4
+    names = list(_SATB) if n_voices == 4 else [f"Voix {i + 1}" for i in range(n_voices)]
+    return SolfaDocument(
+        header=header, voices=notations, voice_names=names, degrade_hint=True
+    )
+
+
+def build_document(
+    runs: List[Run], barlines: Optional[List[Barline]] = None
+) -> SolfaDocument:
     # PaddleOCR rend des segments de ligne (font "paddle") : chemin dédié
     # concaténation + lexer, au lieu du tokenizer glyphe sensible aux espaces.
     if any(r.font == "paddle" for r in runs):
@@ -1062,13 +1582,39 @@ def build_document(runs: List[Run]) -> SolfaDocument:
     header = parse_header(rows)
 
     voice_rows = [r for r in rows if _is_voice_row(r)]
-    systems = _group_systems(voice_rows, y_descending=y_descending)
+    systems, n_voices = _segment_systems(voice_rows, y_descending)
     if not systems:
         raise ValueError("aucune ligne de voix détectée dans le PDF")
-
-    n_voices = _infer_n_voices(systems)
     if n_voices <= 0:
         raise ValueError("aucune voix exploitable dans le PDF")
+
+    # Chemin BARRES VECTORIELLES (grille à mètre variable, barres invisibles au
+    # texte, ex. 11.pdf en 2/4 avec une mesure 3/4) : n'est retenu que s'il détecte
+    # un changement de mesure ET parse proprement ; sinon repli ci-dessous.
+    #
+    # Segmentation par barres ENGLOBANTES (cadre pleine hauteur) plutôt que par
+    # écart+clamp : garde les textures variables (divisi 5 voix) sans détacher ni
+    # jeter de ligne, et lit les voix par rang vertical strict (haut→bas). Confiné
+    # à CE chemin : si None (mètre constant), on retombe sur ``systems`` d'origine
+    # → aucun impact sur les recueils à mètre constant.
+    if barlines and not _has_pipe_voice_rows(voice_rows):
+        bar_systems = _segment_by_enclosing_barlines(voice_rows, barlines)
+        if bar_systems:
+            bar_nv = min(_MAX_VOICES, max(len(s) for s in bar_systems))
+            bar_doc = _try_build_from_barlines(
+                bar_systems, barlines, bar_nv, header, strict_topdown=True
+            )
+        else:
+            bar_doc = _try_build_from_barlines(systems, barlines, n_voices, header)
+        if bar_doc is not None:
+            return bar_doc
+
+        # Chemin POSITION (multi-voix >4 : divisi/double chœur, ex. TAFAHOANA 8,
+        # MPANJAKAN 8). Gardé (>4 voix soutenues + parse propre) → n'affecte pas les
+        # recueils ≤4 voix qui retombent sur les chemins ci-dessous.
+        pos_doc = _try_position_based(rows, barlines, header)
+        if pos_doc is not None:
+            return pos_doc
 
     # Partitions à grille régulière (barre invisible, mi-mesure « | ») :
     # segmentation par colonnes x + mètre, plutôt que par gros écarts.

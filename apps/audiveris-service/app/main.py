@@ -21,6 +21,9 @@ from .merge import merge_musicxml
 app = FastAPI(title="Moozika Audiveris", version="0.1.0")
 
 _AUDIVERIS_BIN = os.environ.get("AUDIVERIS_BIN", "Audiveris")
+_PDF_RESOLUTION_OPT = "org.audiveris.omr.image.ImageLoading.pdfResolution=450"
+_DEFAULT_QUALITY_OPT = "org.audiveris.omr.sheet.Profiles.defaultQuality=Poor"
+_DISCONNECTED_BRACE_PART_OPT = "org.audiveris.omr.sheet.ProcessingSwitches.disconnectedBracedParts=true"
 _BOOK_FOLDERS_OPT = "org.audiveris.omr.sheet.BookManager.useSeparateBookFolders=false"
 _TIMEOUT = int(os.environ.get("AUDIVERIS_TIMEOUT", "600"))
 
@@ -87,6 +90,12 @@ def _run_audiveris(input_path: Path, output_dir: Path) -> subprocess.CompletedPr
         "-export",
         "-output",
         str(output_dir),
+        "-constant",
+        _PDF_RESOLUTION_OPT,
+        "-constant",
+        _DEFAULT_QUALITY_OPT,
+        "-constant",
+        _DISCONNECTED_BRACE_PART_OPT,
         "-constant",
         _BOOK_FOLDERS_OPT,
         "--",

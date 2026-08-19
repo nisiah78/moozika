@@ -11,6 +11,11 @@ Ce document définit **le format texte** consommé par le parseur
 > toucher au parseur : l'OCR produit ce même texte (via des runs positionnés
 > reconstruits par `app/pdf/layout`).
 
+> **Théorie sous-jacente :** ce document définit la **syntaxe** ; la
+> **sémantique musicale** (mouvable-do, valeurs de note, invariant de temps,
+> mètre, anacrouse, harmonie, transposition) est dans `packages/shared-contracts/music-theory.md`.
+> Les deux sont complémentaires.
+
 ## 1. Métadonnées (hors notation)
 
 Passées séparément (paramètres d'API / CLI), car la sol-fa est *mouvable-do* :
@@ -59,10 +64,18 @@ Ex. `d'` = doh à l'octave supérieure, `s,` = soh à l'octave inférieure.
 partition := mesure ( '|' mesure )*
 mesure    := temps ( (':' | '!') temps )*  -- ':' et '!' séparent les temps ;
                                             -- '!' marque la mi-mesure (1 temps = 1 noire)
-temps     := part  ( '.' part )*           -- '.' = DEMI-temps (subdivise le temps en 2)
-part      := cellule ( ',' cellule )*      -- ',' = QUART de temps (subdivise encore en 2)
-cellule   := syllabe | '-' | (vide)
+temps     := demi  ( '.' demi )?           -- '.' = DEMI-temps : UN SEUL point par temps (2 demis)
+demi      := cellule+                       -- 1 note = croche ; 2 notes JUXTAPOSÉES (ex. `mf`)
+                                            --   = 2 double-croches ; un ',' EN TÊTE = silence de quart
+cellule   := syllabe | '-' | '0' | (vide)
 ```
+
+> **Convention SANS espace (double-croches juxtaposées) :** deux notes dans un
+> demi-temps s'écrivent **collées** — `mf.mr` = 4 double-croches (jamais
+> `m.f.m.r`, qui ferait 4 points = 2 temps dans une case de 1). On n'utilise
+> **jamais** `,` pour séparer deux NOTES (`m,f` serait lu « m à l'octave grave » —
+> cf. le double rôle du `,`). Le `,` ne sert qu'au **silence de quart** en tête de
+> demi (`,d` = contre-temps) ou à l'**octave grave** collé à une note (`d,`).
 
 > **Règle de durée (vaut aussi en solfège)** : `.` = **demi-temps**, `,` = **quart
 > de temps**. Le total des notes et silences d'un **temps** fait toujours **exactement
@@ -71,8 +84,9 @@ cellule   := syllabe | '-' | (vide)
 > (le vide, corrigeable ensuite dans l'interface) plutôt que de fausser la durée ou
 > l'octave d'une note voisine.
 
-- `.` est un indicateur de demi-temps, dans un temps il ne peut y avoir qu'un seul point.
-- `,` est un indicateur de quart de temps, il ne peut y avoir que deux virgule dans un temps pour une indicateur de quart de temps.
+- `.` est un indicateur de demi-temps : **un seul point par temps** (2 demis maxi).
+- deux notes dans un demi = **juxtaposées** (`mf` = 2 double-croches), pas de séparateur ; 4 double-croches = `mf.mr`.
+- `,` n'est **jamais** un séparateur entre deux notes (collision avec l'octave grave `d,`) : il n'indique un **quart** que devant un **silence** (contre-temps, ex. `.,d` = silence-quart + d), ou marque l'**octave grave** collé à une note.
 - `:` et `!` séparent les temps (`!` = milieu de mesure, ex. 4/4 : `b : b ! b : b`).
 - `-` : **prolongation** (liaison) de la note précédente.
 - temps **entièrement vide** : **silence**.
@@ -82,6 +96,10 @@ cellule   := syllabe | '-' | (vide)
 - cellule vide **issue d'un `,`** (ex. `-.,d`) : **silence explicite** (un quart).
 - `-.m` : demi-temps de **tenue** de la note précédente, puis `m`.
 - Le nombre de temps de la **première mesure** fixe la signature (ex. 4 temps → 4/4).
+  ⚠️ **Sauf anacrouse (mesure de levée).** Si la pièce commence par une levée, la
+  première mesure est **volontairement incomplète** : cette heuristique se
+  tromperait. Préférer alors le `<time>` déclaré, sinon la **mesure pleine la plus
+  fréquente** (cf. `packages/shared-contracts/music-theory.md` §7.4, à fiabiliser).
 - il faut toujours verifier que la valeur des temps dans chaque mesure correspond a celui du `time signature` 
 
 ### Exemples
@@ -183,3 +201,21 @@ OCR s'active (`app/pdf/ocr.py`) :
 
 Dépendances : `pymupdf`, `opencv-python-headless`, `pytesseract`, `Pillow`,
 et le binaire système `tesseract-ocr` (installé dans l'image Docker).
+
+### Porté et système
+Ecriture et format d'une porté dans une système :
+- une Système peut contenir une ou plusieurs voix avec ou sans instrument(s)
+- une porté peut contenir jusqu'a 3 trois voix pour une solfège donc 3 ligne different pour sol-fa
+- le nombre de porté dans une système n'est pas unique dans une partition, certain system peut avoir plus et d'autre moins, donc il faut que le parseur soit capable de lire ce difference,
+- dans une sol-fa, un system peut ressembler a multiple systeme quand les voix a leur propre lyrics, donc il faut faire attention au solution adopté
+
+exemple: 
+ceci est un système a 4 voix, mais pas 3 système
+d : r |m : l | s : - |  s : |
+na ran' i Je ho vah
+s, : - . s, s, | d t, . l, s, : f, s, . l, t, |d : t, | d : |
+Mba hi saotra ny A naran' i Je ho vah
+m . m : l, . r r | m r . d t, : l, t, . d r | m : r . f | m : |
+l, s, . f, m, : r, . s, | d : f, | s, : - | d / d, : |
+saotra ny A na ran' i Je ho vah
+

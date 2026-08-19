@@ -40,6 +40,15 @@ FROM base AS test
 COPY tests ./tests
 CMD ["python", "-m", "unittest", "discover", "-s", "tests", "-v"]
 
+# --- Étape qualité : pylint -------------------------------------------------
+# Hérite de `base` (et non de python:3.12-slim) pour que fitz/cv2/torch soient
+# résolvables : sinon pylint noierait le rapport sous des import-error faux.
+# pylint est un outil de DEV, jamais importé par le code : la contrainte
+# « app/solfa sans aucune dépendance externe » (CLAUDE.md) reste intacte.
+FROM base AS quality
+RUN pip install --no-cache-dir pylint==3.3.4
+CMD ["pylint", "app"]
+
 # --- Étape d'exécution : API FastAPI ---------------------------------------
 FROM base AS runtime
 EXPOSE 8000

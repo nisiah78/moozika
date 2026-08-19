@@ -8,6 +8,7 @@ Stdlib pur — aucune dépendance externe (contrainte CLAUDE.md).
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import List, Optional, Tuple
 
 from .keys import syllable_of_pitch
@@ -71,10 +72,13 @@ def _cell_to_token(cell: _CellTok, tonic: str, doh_octave: int) -> str:
 # silence de demi-temps).
 
 def _half_token(c0, c1, tonic: str, doh_octave: int):
-    """Deux cellules-quarts → token d'un DEMI-temps, en utilisant ``,`` pour le
-    quart (comme la vraie notation : ``,t`` = silence-quart + t). Renvoie None si
-    non imbriquable proprement — cas où un ``,`` tomberait APRÈS une syllabe (lu
-    comme octave grave), ex. [note, note] ou [note, silence]."""
+    """Deux cellules-quarts → token d'un DEMI-temps.
+
+    Deux notes dans un demi = **juxtaposition** SANS séparateur (convention du
+    recueil : ``mf`` = 2 double-croches). On n'utilise ``,`` QUE pour un
+    silence-quart en tête (``,t`` = contre-temps), jamais entre deux notes (``m,f``
+    serait lu ``m`` octave grave). ``0`` = silence-quart explicite après une note.
+    Round-trip garanti par ``_split_syllable_atoms`` côté lexer."""
     k0, k1 = c0[0], c1[0]
     if k0 == "note" and k1 == "hold":
         return _cell_to_token(c0, tonic, doh_octave)   # note tenue = demi-temps
@@ -86,42 +90,74 @@ def _half_token(c0, c1, tonic: str, doh_octave: int):
         return "," + _cell_to_token(c1, tonic, doh_octave)   # silence-quart + note
     if k0 == "rest" and k1 == "hold":
         return ",-"
-    return None   # ',' interdit après une note (collision octave) → repli plat
+    # ``-`` (tenue) ne peut JAMAIS précéder une note/un silence dans un demi
+    # (``-m`` / ``-0`` = annotation INVALIDE : le ``-`` ne prolonge que la note
+    # PRÉCÉDENTE). La note/le silence prend alors tout le demi-temps — la tenue du
+    # quart de tête est absorbée par la note précédente (approx. d'une double-croche,
+    # nécessaire pour rester conforme au format ; sinon rendu illisible).
+    if k0 == "hold" and k1 == "note":
+        return _cell_to_token(c1, tonic, doh_octave)   # ``-m`` -> ``m`` (demi)
+    if k0 == "hold" and k1 == "rest":
+        return "-"                                     # ``-0`` -> ``-`` (tenue demi)
+    # Cas restants (note+note, note+silence) : JUXTAPOSITION des deux quarts
+    # (``mf``, ``m0``) — jamais de ``-`` collé devant.
+    return _cell_to_token(c0, tonic, doh_octave) + _cell_to_token(c1, tonic, doh_octave)
+
+
+def _render_half(cells: List[_CellTok], tonic: str, doh_octave: int) -> str:
+    """Rend les sous-cellules (quarts) d'un DEMI-temps en un token COLLÉ (jamais
+    de `.` : le `.` sépare les demis, pas les quarts). Notes juxtaposées (`mf`),
+    `,`/`0` pour un silence-quart, `-` seulement pour PROLONGER (jamais devant une
+    note : la tenue de tête est absorbée par la note précédente)."""
+    kinds = [c[0] for c in cells]
+    if all(k == "rest" for k in kinds):
+        return ""                        # demi silencieux
+    if all(k == "hold" for k in kinds):
+        return "-"                        # demi entièrement tenu
+    out: List[str] = []
+    for c in cells:
+        k = c[0]
+        if k == "note":
+            out.append(_cell_to_token(c, tonic, doh_octave))
+        elif k == "hold":
+            if not out:
+                continue                  # tenue de tête -> absorbée (jamais `-note`)
+            if out[-1] in (",", "0"):
+                out.append("-")           # tenue après un silence-quart
+            # sinon : prolonge la note/tenue précédente -> rien à écrire
+        else:                             # rest
+            out.append("," if not out else "0")
+    return "".join(out)
 
 
 def _beat_to_text(cells: List[_CellTok], tonic: str, doh_octave: int) -> str:
     if all(c[0] == "rest" for c in cells):
-        return ""  # temps entièrement silencieux
-    # Temps à 4 cellules (double-croches) : on tente la structure IMBRIQUÉE
-    # demi(`.`)/quart(`,`) de la vraie notation — ``d.,t`` plutôt que ``d.-.0.t``.
+        return ""                         # temps entièrement silencieux
+    if all(c[0] == "hold" for c in cells):
+        return "-"                        # temps entièrement tenu (blanche…)
+    # Temps à 4 cellules (double-croches) : structure IMBRIQUÉE demi(`.`)/quart(`,`).
     if len(cells) == 4:
         h1 = _half_token(cells[0], cells[1], tonic, doh_octave)
         h2 = _half_token(cells[2], cells[3], tonic, doh_octave)
         if h1 is not None and h2 is not None:
             if h2 != "":
                 return f"{h1}.{h2}"
-            # Demi final silencieux : ``-.`` OK (vide après tenue = silence) ;
-            # après une note, ``d.`` serait une prolongation → repli plat (`0`).
             half1_has_note = cells[0][0] == "note" or cells[1][0] == "note"
-            if not half1_has_note:
-                return f"{h1}."
+            return f"{h1}.0" if half1_has_note else f"{h1}."
 
-    # Repli : rendu plat par `.` (double-croches / croches).
-    toks: List[str] = []
-    last_kind: Optional[str] = None
-    for cell in cells:
-        kind = cell[0]
-        if kind == "rest":
-            # Vide après note → relu comme prolongation ; il faut `0`.
-            # Vide en tête ou après tenue → silence (`-.`, `.m`).
-            toks.append("0" if last_kind == "note" else "")
-        elif kind == "hold":
-            toks.append("-")
-            last_kind = "hold"
-        else:
-            toks.append(_cell_to_token(cell, tonic, doh_octave))
-            last_kind = "note"
-    return ".".join(toks)
+    # Autres découpages : AU PLUS un `.` (2 demis). On scinde en 2 moitiés et on
+    # COLLE les sous-cellules de chacune — jamais `a.b.c.d…` (>1 point = invalide).
+    if len(cells) >= 2 and len(cells) % 2 == 0:
+        mid = len(cells) // 2
+        h1 = _render_half(cells[:mid], tonic, doh_octave)
+        h2 = _render_half(cells[mid:], tonic, doh_octave)
+        if h2 != "":
+            return f"{h1}.{h2}"
+        half1_has_note = any(c[0] == "note" for c in cells[:mid])
+        return f"{h1}.0" if half1_has_note else f"{h1}."
+
+    # Impair (1, 3, …) : un seul demi collé (subdivision ternaire cachée).
+    return _render_half(cells, tonic, doh_octave)
 
 
 # ---------------------------------------------------------------------------
@@ -365,8 +401,19 @@ def to_solfa(
         if m.key_tonic and "(Doh=" in prefix:
             # _measure_directive_prefix already added Doh= ; time prefix may precede
             pass
+        # Anacrouse (levée) : mesure volontairement incomplète (§7.4). On ne rend
+        # QUE sa vraie longueur — surtout pas gonflée à la mesure pleine (sinon
+        # temps vides « fantômes » après la note de levée). measure_divisions est
+        # rabattu au contenu, arrondi au temps supérieur.
+        render_meter = cur_meter
+        if m.implicit:
+            content = sum(n.duration for n in m.notes)
+            if 0 < content < cur_meter.measure_divisions:
+                bd = cur_meter.beat_divisions or 1
+                beats = max(1, -(-content // bd))  # ceil(content / bd)
+                render_meter = replace(cur_meter, beats=beats)
         measure_texts.append(
-            prefix + _measure_to_text(m, cur_meter, cur_tonic, doh_octave, min_cell)
+            prefix + _measure_to_text(m, render_meter, cur_tonic, doh_octave, min_cell)
         )
     notation = " | ".join(measure_texts)
 

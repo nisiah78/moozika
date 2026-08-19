@@ -1,0 +1,12 @@
+# Analyse statique — Niveau 2 de la porte pré-commit (`make lint-php`).
+# Niveau 5 = valeur de MESURE choisie pour la Phase 0 ; le niveau définitif se
+# décide sur les chiffres réels (cf. docs du gate). L'extension Symfony est
+# chargée automatiquement par phpstan/extension-installer.
+parameters:
+    level: 5
+    paths:
+        - src
+    # Le container n'existe que si le cache dev a été généré (bin/console cache:warmup).
+    # Sans lui, phpstan perd la connaissance des services injectés.
+    symfony:
+        containerXmlPath: var/cache/dev/App_KernelDevDebugContainer.xml

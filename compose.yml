@@ -127,6 +127,22 @@ services:
       target: test
     profiles: ["test"]
 
+  # Lint Python (pylint) pour les DEUX apps Python : pip est cassé en local,
+  # donc l'outillage vit dans l'image. Les sources sont montées pour que le lint
+  # porte sur le worktree et non sur la copie figée dans l'image.
+  omr-lint:
+    build:
+      context: ./apps/omr-service
+      target: quality
+    profiles: ["test"]
+    volumes:
+      - ./apps/omr-service/app:/app/app:ro
+      - ./apps/omr-service/tests:/app/tests:ro
+      - ./apps/omr-service/.pylintrc:/app/.pylintrc:ro
+      # Service audiveris monté en entier : pylint le lint depuis /audiveris
+      # (option -w), donc app/ et tests/ se résolvent comme des modules normaux.
+      - ./apps/audiveris-service:/audiveris:ro
+
 volumes:
   postgres_data:
   minio_data:

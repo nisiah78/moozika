@@ -373,7 +373,12 @@ export function solfaPulseCount(beats: number, beatType: number): number {
   if (beatType === 8 && (beats === 5 || beats === 6 || beats === 10)) {
     return beats;
   }
-  if ((beatType === 8 || beatType === 16) && beats % 3 === 0 && beats > 3) {
+  // /16 : métrique variable à la double-croche (5/16, 7/16, 12/16…) — N
+  // pulsations d'une double-croche, toujours simple (miroir de classify_meter).
+  if (beatType === 16) {
+    return beats;
+  }
+  if (beatType === 8 && beats % 3 === 0 && beats > 3) {
     return beats / 3;
   }
   return beats;
@@ -392,14 +397,34 @@ export function beatScheduleForModel(
   const out: number[] = [];
   const n = Math.max(1, measureCount);
   for (let i = 0; i < n; i++) {
-    const ts = model.measures[i]?.timeSignature;
+    const meas = model.measures[i];
+    const ts = meas?.timeSignature;
     if (ts) {
       beats = ts.beats;
       beatType = ts.beatType;
     }
+    // Anacrouse (levée, §7.4) : mesure incomplète → ne compter QUE ses pulsations
+    // réelles (contenu), jamais la mesure pleine (sinon temps « fantômes »).
+    if (meas?.implicit && meas.notes?.length) {
+      const content = meas.notes.reduce((s, note) => s + (note.duration || 0), 0);
+      const perPulse = beatDivisionsForMeter(beats, beatType);
+      const full = solfaPulseCount(beats, beatType) * perPulse;
+      if (content > 0 && content < full) {
+        out.push(Math.max(1, Math.ceil(content / perPulse)));
+        continue;
+      }
+    }
     out.push(solfaPulseCount(beats, beatType));
   }
   return out;
+}
+
+/** Divisions par pulsation (miroir de `beatDivisionsFor`, sans import circulaire). */
+function beatDivisionsForMeter(beats: number, beatType: number): number {
+  if (beatType === 8 && (beats === 5 || beats === 6 || beats === 10)) return 2;
+  if (beatType === 16) return 1;
+  if (beatType === 8 && beats % 3 === 0 && beats > 3) return 6;
+  return 4;
 }
 
 /** Divisions par pulsation pour chaque mesure (miroir `beatDivisionsFor`). */
@@ -417,15 +442,7 @@ export function beatDivScheduleForModel(
       beats = ts.beats;
       beatType = ts.beatType;
     }
-    // Inline mirror of beatDivisionsFor — évite un import circulaire.
-    if (beatType === 8 && (beats === 5 || beats === 6 || beats === 10)) out.push(2);
-    else if (
-      (beatType === 8 || beatType === 16) &&
-      beats % 3 === 0 &&
-      beats > 3
-    )
-      out.push(6);
-    else out.push(4);
+    out.push(beatDivisionsForMeter(beats, beatType));
   }
   return out;
 }

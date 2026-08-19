@@ -16,7 +16,10 @@ const ATOM_ONE = /^(-|_|0|[drmfslt](?:[aei])?(?:'+|,+|_*)?)$/i;
 
 export function beatDivisionsFor(beatType: number, beats: number): number {
   if (beatType === 8 && (beats === 5 || beats === 6 || beats === 10)) return 2;
-  if ((beatType === 8 || beatType === 16) && beats % 3 === 0 && beats > 3) return 6;
+  // /16 : pulsation = 1 double-croche, pas de subdivision plus fine (métrique
+  // variable des fihirana : 5/16, 7/16, 12/16…).
+  if (beatType === 16) return 1;
+  if (beatType === 8 && beats % 3 === 0 && beats > 3) return 6;
   return BEAT_DIV;
 }
 
@@ -76,19 +79,22 @@ export function analyzeBeatFill(raw: string, beatDiv = BEAT_DIV): BeatFill {
 
   const compact = text.replace(/\s+/g, "");
 
-  // Atomes collés sans séparateur rythmique : -d, d-, drm…
+  // Notes collées sans séparateur : `d` (1 temps), `dd` (2 croches), `dddd`
+  // (4 doubles-croches). La JUXTAPOSITION = subdivision égale du temps (convention
+  // sol-fa sans espace), pas un dépassement.
   if (!compact.includes(".") && !hasRhythmComma(compact)) {
     const atoms = extractGluedAtoms(compact);
-    if (atoms.length > 1) {
-      return { units: atoms.length * beatDiv, beatDiv, status: "over" };
-    }
-    if (atoms.length === 1 && ATOM_ONE.test(atoms[0])) {
+    if (atoms.length === 0) {
+      if (!ATOM_ONE.test(compact) && compact !== "-") {
+        return { units: 0, beatDiv, status: "invalid" };
+      }
       return { units: beatDiv, beatDiv, status: "ok" };
     }
-    if (!ATOM_ONE.test(compact) && compact !== "-") {
-      return { units: 0, beatDiv, status: "invalid" };
+    const n = atoms.length;
+    if (n === 1 || beatDiv % n === 0) {
+      return { units: beatDiv, beatDiv, status: "ok" };
     }
-    return { units: beatDiv, beatDiv, status: "ok" };
+    return { units: n * beatDiv, beatDiv, status: "over" };
   }
 
   // Structure . / ,
@@ -105,9 +111,23 @@ export function analyzeBeatFill(raw: string, beatDiv = BEAT_DIV): BeatFill {
       if (!Number.isInteger(qSize) && quarters.length > 1) invalid = true;
       for (const q of quarters) {
         const tok = q.trim();
-        total += Math.max(1, Math.round(Number.isFinite(qSize) ? qSize : 1));
-        if (tok === "" || tok === "-" || tok === "_" || tok === "0") continue;
-        if (!ATOM_ONE.test(tok)) invalid = true;
+        if (tok === "" || tok === "-" || tok === "_" || tok === "0") {
+          total += Math.max(1, Math.round(Number.isFinite(qSize) ? qSize : 1));
+          continue;
+        }
+        // Notes JUXTAPOSÉES dans un quart (`dd`) = sous-cellules égales (2
+        // double-croches), pas une cellule invalide.
+        const atoms = extractGluedAtoms(tok);
+        if (atoms.length === 0) {
+          invalid = true;
+          total += Math.max(1, Math.round(Number.isFinite(qSize) ? qSize : 1));
+          continue;
+        }
+        const aSize = qSize / atoms.length;
+        if (!Number.isInteger(aSize) && atoms.length > 1) invalid = true;
+        for (let a = 0; a < atoms.length; a++) {
+          total += Math.max(1, Math.round(Number.isFinite(aSize) ? aSize : 1));
+        }
       }
     }
 

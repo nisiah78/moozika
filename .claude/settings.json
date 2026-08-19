@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(python3 scripts/quality/gate.py:*)",
+      "Bash(make gate)",
+      "Bash(make gate-report)",
+      "Bash(make lint)",
+      "Bash(make lint-py)",
+      "Bash(make lint-php)",
+      "Bash(make lint-front)",
+      "Bash(make test)",
+      "Bash(make test-front)",
+      "Bash(make test-audiveris)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git show:*)"
+    ]
+  }
+}

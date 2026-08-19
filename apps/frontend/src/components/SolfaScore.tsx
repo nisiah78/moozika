@@ -14,6 +14,7 @@ import { flushSync } from "react-dom";
 import { IBM_Plex_Mono, Source_Serif_4 } from "next/font/google";
 import type { Measure as ModelMeasure, ScoreResult, TripletMark, VoiceModel } from "@/lib/types";
 import { TempoControl } from "@/components/TempoControl";
+import { buildSolfaMarkdown } from "@/lib/solfaMarkdown";
 import {
   beatScheduleForScore,
   buildSolfaSystems,
@@ -30,6 +31,7 @@ import {
   regenerateFromModels,
   splitVoiceForDivisi,
 } from "@/lib/scoreEdit";
+import { voiceAbbr } from "@/lib/voiceAbbr";
 import {
   analyzeBeatFill,
   analyzeTripletFill,
@@ -95,13 +97,6 @@ const KNOWN_SUBTITLES: Record<string, string> = {
   "hitahy anao anie ny tompo": "The Lord bless you and keep you",
 };
 
-const VOICE_ABBR: Record<string, string> = {
-  Soprano: "S",
-  Alto: "A",
-  Tenor: "T",
-  Bass: "B",
-};
-
 function prettyTitle(raw: string): string {
   const t = raw.replace(/\s+/g, " ").trim();
   if (!t) return "Partition";
@@ -115,16 +110,6 @@ function prettyTitle(raw: string): string {
 function lookupSubtitle(title: string): string | null {
   const key = title.toLowerCase().replace(/\s+/g, " ").trim();
   return KNOWN_SUBTITLES[key] ?? null;
-}
-
-function voiceAbbr(name: string): string {
-  // « Soprano 2 » → « S2 » (voix ajoutée par divisi).
-  const m = name.match(/^(.*?)\s*(\d+)$/);
-  if (m) {
-    const baseAbbr = VOICE_ABBR[m[1].trim()] ?? m[1].trim().charAt(0).toUpperCase();
-    return `${baseAbbr}${m[2]}`;
-  }
-  return VOICE_ABBR[name] ?? name.charAt(0).toUpperCase();
 }
 
 export function notationToGrid(
@@ -980,6 +965,8 @@ function padGrid(grid: string[][], beatsPerMeasure: number | number[]): string[]
 export type SolfaScoreHandle = {
   /** Commit cellule active + brouillons, attend le parse, renvoie le score à jour. */
   flush: () => Promise<ScoreResult>;
+  /** Exporte la partition sol-fa rendue en Markdown monospacé. */
+  exportMarkdown: () => Promise<string>;
 };
 
 type SolfaScoreProps = {
@@ -1036,6 +1023,8 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
   resultRef.current = result;
   const localGridsRef = useRef(localGrids);
   localGridsRef.current = localGrids;
+  const lyricsRef = useRef(lyrics);
+  lyricsRef.current = lyrics;
   /** Brouillons de frappe : ref seule (pas de setState) pour ne pas re-rendre toute la partition. */
   const beatDraftsRef = useRef<Record<string, string>>({});
   const cellOverridesRef = useRef(cellOverrides);
@@ -1051,7 +1040,11 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
    */
   const skipNextGridResetRef = useRef(false);
   const handleLyricChange = useCallback<LyricsChange>((key, value) => {
-    setLyrics((prev) => ({ ...prev, [key]: value }));
+    setLyrics((prev) => {
+      const next = { ...prev, [key]: value };
+      lyricsRef.current = next;
+      return next;
+    });
   }, []);
 
   const handleBeatDraft = useCallback((key: string, value: string) => {
@@ -1547,12 +1540,9 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
     ],
   );
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      flush: async () => {
-        skipBlurRef.current = null;
-        await runExclusive(async () => {
+  const flushCurrent = useCallback(async () => {
+    skipBlurRef.current = null;
+    await runExclusive(async () => {
           const drafts = {
             ...cellOverridesRef.current,
             ...beatDraftsRef.current,
@@ -1671,12 +1661,21 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
             }
           }
 
-          await publishParsed(grids);
-        });
-        return latestResultRef.current;
+      await publishParsed(grids);
+    });
+    return latestResultRef.current;
+  }, [beatSchedule, beatDivSchedule, runExclusive, publishParsed]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      flush: flushCurrent,
+      exportMarkdown: async () => {
+        const next = await flushCurrent();
+        return buildSolfaMarkdown(next, tempo, lyricsRef.current);
       },
     }),
-    [beatSchedule, beatDivSchedule, runExclusive, publishParsed],
+    [flushCurrent, tempo],
   );
 
   const buildVoiceGrid = useCallback(
@@ -2379,11 +2378,20 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
     >
       <header className="solfa-score__header">
         <p className="solfa-score__meta-left">
-          Do dia {header.tonic}, {beats}/{beatType}
+          Do dia {header.tonic}
+          {header.mode === "minor" ? " (mineur)" : ""}, {beats}/{beatType}
         </p>
         <div className={`solfa-score__titles ${solfaSerif.className}`}>
           <h2 className="solfa-score__title">{title}</h2>
-          {subtitle && <p className="solfa-score__subtitle">({subtitle})</p>}
+          {header.composer && (
+            <p className="solfa-score__subtitle">{header.composer}</p>
+          )}
+          {header.work && (
+            <p className="solfa-score__subtitle text-stone-500">{header.work}</p>
+          )}
+          {subtitle && !header.composer && (
+            <p className="solfa-score__subtitle">({subtitle})</p>
+          )}
         </div>
         <div className="solfa-score__meta-right">
           <TempoControl value={tempo} onChange={onTempoChange} />

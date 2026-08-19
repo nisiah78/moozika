@@ -13,6 +13,14 @@ Le plan produit et la conception détaillée vivent dans `docs/base_plan.md` (vi
 `docs/architecture.md` (décisions actées, diagrammes, roadmap phasée). **Lire `docs/architecture.md`
 avant toute décision d'architecture** : il tranche plusieurs écarts vs `base_plan` (voir ci-dessous).
 
+La **théorie musicale** qui sous-tend la reconnaissance/composition (hauteurs, gammes, mouvable-do,
+rythme, mètre, harmonie, transposition) est distillée en règles d'implémentation dans
+`packages/shared-contracts/music-theory.md`. **Lire `packages/shared-contracts/music-theory.md` avant toute décision touchant la reconnaissance
+des notes, le rythme, la tonalité ou la composition** — il rattache chaque règle du code à sa cause
+théorique et marque ce qui vaut pour la portée (🎼), pour le sol-fa (🎵) et ce qui est hors périmètre
+v1 (🚧). En cas de contradiction : `music-theory.md` fait foi sur la théorie musicale,
+`solfa-format.md` sur le format texte, `architecture.md` sur l'architecture.
+
 ## Principe directeur : MusicXML est le pivot
 
 Tout gravite autour de **MusicXML** comme format canonique et stocké. Chaque module ne connaît que ce
@@ -79,6 +87,55 @@ le parseur cœur (FastAPI/pydantic ne servent qu'à la couche API `main.py`).
 l'**interface stable** entre l'OCR, la saisie manuelle et le parseur. Cas non gérés (triolets,
 mode mineur, signature variable, polyphonie dans une seule voix) → erreur de parsing explicite plutôt
 qu'une partition fausse. Modifier ce contrat = décision à peser, pas un détail d'implémentation.
+
+## Qualité & commit : la porte pré-commit
+
+Avant tout commit, une porte **déterministe** (aucun appel à un modèle) lance les contrôles des
+**seuls stacks touchés par l'index**. Cerveau unique : `scripts/quality/gate.py` (stdlib pure,
+utilisable hors Claude Code). Rapport machine : `.git/pr-gate-report.json`.
+
+Deux niveaux, volontairement séparés :
+
+| Niveau | Contenu | Tolérance |
+| --- | --- | --- |
+| **1 — bloquant** | tests du stack, `tsc --noEmit`, `php -l`, syntaxe Python | **zéro** — du code qui ne compile pas ou dont les tests échouent ne passe jamais |
+| **2 — scoré** | pylint / phpstan + php-cs-fixer / eslint | note sur 10, seuil dans `scripts/quality/thresholds.json` |
+
+Formule du Niveau 2 (celle de pylint, appliquée à tous les stacks) :
+`score = 10 × (1 − points / N)`, `N` = **lignes ajoutées** par le diff sur les fichiers
+réellement lintés. Le dénominateur « lignes ajoutées » et non « LOC des fichiers entiers » est
+un choix mesuré : avec les fichiers entiers, `N > 6000` rend n'importe quel seuil inopérant.
+
+Seuil actuel : **8,0/10**, calibré le 2026-08-19 sur mesure réelle (api 8,81 · omr 9,46 ·
+audiveris 9,63 · frontend 9,96). Remettre `score_threshold` à `null` repasse le Niveau 2 en mode
+mesure ; le Niveau 1 bloque indépendamment de ce réglage.
+
+Règles pylint désactivées par décision (cf. `apps/omr-service/.pylintrc`) :
+`import-outside-toplevel` (les imports tardifs gardent `app/solfa` sans dépendance externe) et les
+docstrings de fonctions/classes internes. La famille « complexité » (`too-many-*`) reste **active**.
+
+```bash
+make gate           # porte sur ce qui est INDEXÉ (git add) — c'est ce qui bloque
+make gate-report    # mesure tout le worktree modifié, ne bloque jamais
+make lint           # les 3 chaînes qualité (py via Docker, php, front)
+make hooks          # active le hook pre-commit versionné (une fois par clone)
+```
+
+Skill `/pr-check` : orchestre porte → message de commit → commit de l'index → proposition
+d'audit (`/code-review`, `/security-review`). Il ne pousse pas, n'ouvre pas de PR, n'indexe rien
+tout seul et ne corrige jamais le code pour faire passer un contrôle.
+
+Deux contraintes d'environnement à connaître :
+- **`pip` est cassé en local** (`No module named pip`) → pylint vit dans le stage `quality` du
+  Dockerfile omr-service (`make lint-py`). Sa config est dans `apps/omr-service/.pylintrc`,
+  **monté au runtime** : la mettre dans `pyproject.toml` invaliderait la couche Docker qui
+  installe torch/paddle (~10 min de rebuild par règle ajustée).
+- **`apps/omr-service/app/__pycache__` appartient à root** (ancien run Docker monté) → le contrôle
+  de syntaxe utilise `ast.parse` (`scripts/quality/syntax_check.py`), jamais `py_compile` qui
+  écrirait un `.pyc`.
+
+Lacune assumée : **`apps/api` n'a aucun test** (pas de PHPUnit, pas de `tests/`). Son Niveau 1 se
+limite à `php -l`, et le rapport le dit explicitement au lieu d'afficher un vert trompeur.
 
 ## Commandes
 

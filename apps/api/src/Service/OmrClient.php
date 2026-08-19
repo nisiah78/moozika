@@ -22,12 +22,18 @@ class OmrClient
      *
      * @return array{musicxml: string, voices: list<array<string, mixed>>}
      */
-    public function musicxmlFromModels(array $models, string $title = ''): array
-    {
+    public function musicxmlFromModels(
+        array $models,
+        string $title = '',
+        string $composer = '',
+        string $work = '',
+    ): array {
         $response = $this->httpClient->request('POST', rtrim($this->omrServiceUrl, '/').'/musicxml/from-models', [
             'json' => [
                 'models' => $models,
                 'title' => $title,
+                'composer' => $composer,
+                'work' => $work,
             ],
             'timeout' => 60,
         ]);

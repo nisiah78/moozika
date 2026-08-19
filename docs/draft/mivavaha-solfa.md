@@ -1,0 +1,11 @@
+[Soprano]
+m,.f,| s,: -.s, : f,.,m, : f,.s, | d : -.d : r.,t, : d.r | m : -.r : f.,m : r.,t, | d : - :  : m,.f, | s, : -.s, : f,.,m, : f,.s, | d : -.d : r.,t, : d.r | m : -.r : f.,m : r.,t | d : -. :  : .s | m : -.m : m .r: m.s | m : -.m : m.,r : f.,m | r : -.r : r.,d : r.,m | r : -.r : m.,r : d.t, | d : -.d : d.,t, : d.r | d : -.d : r .,d : t,.l, | t, : -.t, : d.,d : t.t, | d : r.,t, : d.,d : t,.l, | s, : -.d : l, : -.d |s, : -. : .m : d.m, | s, : -.d : l,.,s, : l,.,d | s, : - : d : r | m : -.r : f.,m : r.,t, | d : - : d : r | m : -.r : f.,m : r.,t, | d : - : - :  |
+
+[Alto]
+ d,.r, | m, : -.m, : r,.,d, : r,.m, | l, : -.l, : t,.,s, : l,.t, | d.,r : d.t, : l,.,s, : f,.,f, | m, : -. :  : d,.r, | m, : -.m, : r,.,d, : r,.m, | l, : -.l, : t,.,s, : l,.t, | d.,r : d.t, : l.,s, : f,.,f, | m, : -. :  : .t, | d : -.d : d.t, : d.r | d : -.d : d.,t, : r.,d | t, : -.t, : t,.,l, : t,.,d | t, : -.t, : d.,t, : l,.s, | l, : t,.,s, : l,.,l, : s,.f, | m, : -.m, : f, : -.f, | m, : f, : s,.s, : m,.d, | m, : -.m, : f,.,m, : f,.,f, | m, : f, : s,.s, : m,.d, | m, : -.m, : f,.,m, : f,.,f, | m, : -.m, : f,.,m, : f,.,f, | m, : f, : s, : t, | d.,r : d.,t, : t,.,s, : f,.,f, | m, : m,.f, : s, : t, | d.,r : d.,t, : t,.,s : f,.,f, | m, : - : - :  |
+
+[Tenor]
+ s,. s,| d : s, : s,., s,: s,. d | f : f : f.,r: m. f | s., f: m.r:d., d : t,., S,| S, :-.d : t,., l,: s,. S,|d: s, : S,., S, : s,. d|f : f : f, r: m. f|s., f:m.r :d., d: t,., s, | s,:-.m:m., r : m S|S : S : S : -.s| s:s:s:-.s|s:s:s:-s.s|s:s:s:-.m|f : f : f :-. f|f : f : f :-.r|r:f.m:r.,r:r.r|r:r.,d:d.,d:t,.t,|d : S,: d:t,| d:r:m:s,|d:s,:d:t,|d:r:m:f|s.,f:m.r:d.,d:l;.,s,|s,:d.r:m:f|s.,f:m.,r:d.,d:l,.,s,|s,:-:-:|
+
+ [Bass]
+ d,. d,| d, : d, : d,., d, : d,. d,| f,: l,: s,.,s,: l,.t| d., t,: l,s, :f,., r,: S,:,s,| d, :-. l, : s,., f,: m,. r,|d,:d,: d,., d, : d,. d,| f, : l,: s,., s, : l,. t,|d., t, : l,.s, :f,., r, :s,., s,| d,:-.d :d., t,: d. r|d : d : d. s, : d.t,|l,.t,:d:d:-.d|s,:s,:s,:-.s,|s:s:s,:-.d|f,:f,:f,:-.f,|f,:f,:f,:-.r,|s,:-.s,:l,.,l,:s,.s,|fi:s,.,d,:f,.,:m,.r,|d,:m,:f,:r|d,:-:-:.s,|d,:m,:f,:r,|d,:s,:m,:s,|d.,t,:l,.,s,:f,.r,;s,.,s,|d,:m,.s,:m,:s,|d.,t,:l,.s,:f,.,r,:s,.,s,|d,:-:-|  

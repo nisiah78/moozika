@@ -12,7 +12,7 @@ from ..solfa.rhythm import MeterError, classify_meter, split_duration
 from ..staff.recognize import StaffRecognizeError, staff_pdf_to_score
 from .correct import correct_ocr_runs
 from .detect import classify_runs, detect_pdf_kind
-from .extract import ExtractError, extract_runs
+from .extract import ExtractError, extract_runs, extract_runs_and_barlines
 from .layout import SolfaDocument, build_document
 from .ocr import OcrError, ocr_to_runs
 
@@ -81,10 +81,10 @@ def pdf_to_document(
 ) -> SolfaDocument:
     """Extrait la structure sol-fa (en-tête + voix en notation canonique)."""
     try:
-        runs = extract_runs(_read(source))
+        runs, barlines = extract_runs_and_barlines(_read(source))
         if classify_runs(runs) == "solfa_text":
             progress(on_progress, phase="layout", pct=70, message="Reconstruction des voix…")
-            return build_document(runs)
+            return build_document(runs, barlines)
     except ExtractError:
         pass
 
@@ -206,10 +206,15 @@ def pdf_to_models(
                 clef=_CLEF_BY_NAME.get(name, "treble"),
                 tempo=doc.header.tempo,
                 part_name=name,
+                # NE PAS imposer le mètre de l'en-tête : l'inférence par pulsations
+                # + les marqueurs (N/M) par mesure gèrent le mètre VARIABLE (jubilate
+                # 10/8→6/8→10/8…). Forcer l'en-tête écrasait cette détection.
                 lenient=True,
-                # Dégradation (legato + silence de complément) réservée au SCAN
-                # OCR bruité ; un PDF typographié a un rythme fiable → pas touché.
-                degrade=scanned,
+                # Dégradation (legato + silence de complément) : SCAN OCR bruité,
+                # OU reconstruction par barres vectorielles (grille à mètre variable,
+                # ex. 11.pdf) qui peut porter du bruit de grille. PDF typographié
+                # ordinaire (rythme fiable) → pas touché.
+                degrade=scanned or doc.degrade_hint,
             )
         except ParseError as exc:
             errors.append(f"voix {name!r}: {exc}")
@@ -264,11 +269,16 @@ def _solfa_pdf_to_score(
     progress(on_progress, phase="convert", pct=95, message="Génération MusicXML…")
 
     def _clean_notation(m: ScoreModel) -> str:
-        """Notation affichée. Sur un SCAN, le texte OCR brut est bruité (espaces,
-        ``,`` mis pour ``.`` — ex. ``f, , s,``) : on le **régénère propre** depuis
-        le modèle parsé (subdivisions ``.`` canoniques, MÊME précision qu'avant —
-        cf. ``to_solfa`` min_cell=1). Typographié : le texte est déjà propre."""
-        if scanned:
+        """Notation affichée (onglet sol-fa). Régénérée **depuis le modèle parsé**
+        (``to_solfa``, format canonique) dans deux cas où le texte brut n'est pas
+        fiable/canonique pour l'affichage :
+          - SCAN OCR (espaces, ``,`` mis pour ``.``) ;
+          - reconstruction par barres vectorielles (``degrade_hint`` — grille à
+            mètre variable, ex. 11.pdf) dont la chaîne brute porte des espaces et
+            des artefacts → l'onglet sol-fa doit refléter le MÊME modèle que la
+            portée (sinon incohérence : portée juste, sol-fa cassé).
+        Sinon (PDF typographié ordinaire) : le texte brut est déjà canonique."""
+        if scanned or doc.degrade_hint:
             try:
                 return to_solfa(m)
             except (ValueError, MeterError):
@@ -278,7 +288,10 @@ def _solfa_pdf_to_score(
     return {
         "header": {
             "title": doc.header.title,
+            "composer": doc.header.composer,
             "tonic": tonic_override or doc.header.tonic,
+            "mode": models[0].mode if models else "major",
+            "fifths": models[0].fifths if models else 0,
             "timeSignature": {"beats": doc.header.beats, "beatType": doc.header.beat_type},
             "tempo": doc.header.tempo,
         },

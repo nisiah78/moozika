@@ -24,6 +24,13 @@ import {
   getScore,
   modelToMusicxml,
 } from "@/lib/scoresApi";
+import { ScorePropertiesModal } from "@/components/ScorePropertiesModal";
+import {
+  applyScoreProperties,
+  regenerateFromModels,
+} from "@/lib/scoreEdit";
+import { KEY_SIGNATURE_OPTIONS } from "@/lib/keySignatures";
+import { buildSolfaMarkdown } from "@/lib/solfaMarkdown";
 
 type Mode = "score" | "solfa";
 
@@ -44,8 +51,10 @@ export default function Home() {
   const [dragging, setDragging] = useState(false);
   const [tempo, setTempo] = useState<TempoSettings | null>(null);
   const [titleDraft, setTitleDraft] = useState("");
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const viewerRef = useRef<ScoreViewerHandle>(null);
+  const exportMenuRef = useRef<HTMLDetailsElement>(null);
 
   // Tempo / titre : initialisés à l'ouverture (openViewer), pas à chaque
   // onChange d'édition — sinon le tempo choisi est écrasé avant Enregistrer.
@@ -213,10 +222,11 @@ export default function Home() {
       // Important : ne PAS reprendre `converted.voices[].notation` (to_solfa
       // backend) ni perdre `triplets` / `enterMeasure` — ça découpait les
       // triolets `drm` en `d : r | m` à l'enregistrement.
-      const converted = await modelToMusicxml(
-        voices.map((v) => v.model),
+      const converted = await modelToMusicxml(voices.map((v) => v.model), {
         title,
-      );
+        composer: header.composer,
+        work: header.work,
+      });
       const musicxml = converted.musicxml;
       if (!musicxml) throw new Error("MusicXML manquant — impossible d'enregistrer");
       if (converted.voices?.length) {
@@ -233,6 +243,7 @@ export default function Home() {
               enterMeasure: v.model.enterMeasure,
               partName: v.model.partName || cv.model.partName,
               dohOctave: v.model.dohOctave ?? cv.model.dohOctave,
+              mode: v.model.mode ?? cv.model.mode,
             },
           };
         });
@@ -279,6 +290,27 @@ export default function Home() {
       setSaving(false);
     }
   }, [result, scoreId, titleDraft, mode, tempo]);
+
+  const applyProperties = useCallback(
+    async (draft: Parameters<typeof applyScoreProperties>[1], keyId: string) => {
+      if (!result) return;
+      setError(null);
+      try {
+        const flushed = mode === "solfa" ? await viewerRef.current?.flush() : null;
+        const base = flushed ?? result;
+        const keyEntry = KEY_SIGNATURE_OPTIONS.find((k) => k.id === keyId);
+        if (!keyEntry) throw new Error("Tonalité inconnue");
+        const { score: mutated, needsRegen } = applyScoreProperties(base, draft, keyEntry);
+        const next = needsRegen ? await regenerateFromModels(mutated, mutated.voices) : mutated;
+        setResult(next);
+        setTitleDraft(next.header.title || "");
+        setPropertiesOpen(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [result, mode],
+  );
 
   const navigate = (next: AppView) => {
     setView(next);
@@ -327,6 +359,44 @@ export default function Home() {
     window.print();
   }, [flushSolfaEdits]);
 
+  const closeExportMenu = useCallback(() => {
+    if (exportMenuRef.current) exportMenuRef.current.open = false;
+  }, []);
+
+  const downloadTextFile = useCallback((filename: string, content: string) => {
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const exportMarkdown = useCallback(async () => {
+    if (!result || !tempo) return;
+    try {
+      const content =
+        mode === "solfa" && viewerRef.current
+          ? await viewerRef.current.exportMarkdown()
+          : buildSolfaMarkdown(result, tempo);
+      const baseName =
+        (titleDraft || result.header.title || "partition")
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "partition";
+      downloadTextFile(`${baseName}.md`, content);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      closeExportMenu();
+    }
+  }, [closeExportMenu, downloadTextFile, mode, result, tempo, titleDraft]);
+
   return (
     <>
       <Header onMenuClick={() => setDrawerOpen(true)} />
@@ -339,7 +409,16 @@ export default function Home() {
 
       <main className="mx-auto max-w-6xl space-y-6 px-4 py-6">
         {view === "library" && (
-          <ScoreLibrary onOpen={(id) => void loadSaved(id)} onImport={() => navigate("import")} />
+          <ScoreLibrary
+            onOpen={(id) => void loadSaved(id)}
+            onImport={() => navigate("import")}
+            onDeleted={(id) => {
+              if (scoreId === id) {
+                setScoreId(null);
+                setResult(null);
+              }
+            }}
+          />
         )}
 
         {view === "import" && (
@@ -438,6 +517,13 @@ export default function Home() {
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
+                  onClick={() => setPropertiesOpen(true)}
+                  className="rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-100"
+                >
+                  Éditer
+                </button>
+                <button
+                  type="button"
                   disabled={saving || !result.musicxml}
                   onMouseDown={(e) => {
                     // Empêche le blur de la cellule avant qu'on puisse lire sa valeur
@@ -455,29 +541,63 @@ export default function Home() {
                   onBeforePlay={flushSolfaEdits}
                   onBeatChange={applyBeatHighlight}
                 />
-                <button
-                  type="button"
-                  onClick={() => void printScore()}
-                  title={`Imprimer / exporter en PDF la vue ${mode === "solfa" ? "sol-fa" : "portée"}`}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-100"
-                >
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden
+                <details ref={exportMenuRef} className="relative">
+                  <summary
+                    className="inline-flex list-none items-center gap-1.5 rounded-md border border-stone-300 bg-white px-3 py-1.5 text-sm font-medium text-stone-700 hover:bg-stone-100 [&::-webkit-details-marker]:hidden"
+                    title="Exporter la partition"
                   >
-                    <path d="M6 9V2h12v7" />
-                    <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
-                    <path d="M6 14h12v8H6z" />
-                  </svg>
-                  PDF
-                </button>
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <path d="M12 3v12" />
+                      <path d="m7 10 5 5 5-5" />
+                      <path d="M5 21h14" />
+                    </svg>
+                    Export
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden
+                    >
+                      <path d="m6 9 6 6 6-6" />
+                    </svg>
+                  </summary>
+                  <div className="absolute right-0 z-20 mt-2 min-w-32 rounded-md border border-stone-200 bg-white p-1 shadow-lg">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        closeExportMenu();
+                        void printScore();
+                      }}
+                      className="block w-full rounded px-3 py-2 text-left text-sm text-stone-700 hover:bg-stone-100"
+                      title={`Imprimer / exporter en PDF la vue ${mode === "solfa" ? "sol-fa" : "portée"}`}
+                    >
+                      PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void exportMarkdown()}
+                      className="block w-full rounded px-3 py-2 text-left text-sm text-stone-700 hover:bg-stone-100"
+                      title="Exporter la partition sol-fa en Markdown"
+                    >
+                      .md
+                    </button>
+                  </div>
+                </details>
                 <div className="inline-flex overflow-hidden rounded-md border border-stone-300">
                   <ToggleButton active={mode === "score"} onClick={() => void switchMode("score")}>
                     Portée
@@ -502,11 +622,27 @@ export default function Home() {
                 <h2 className="text-xl font-bold text-stone-900">
                   {titleDraft.trim() || result.header.title || "Sans titre"}
                 </h2>
+                {(result.header.composer || result.header.work) && (
+                  <p className="mt-0.5 text-sm text-stone-600">
+                    {[result.header.composer, result.header.work].filter(Boolean).join(" · ")}
+                  </p>
+                )}
                 <p className="mt-1 text-sm text-stone-600">
-                  Doh = {result.header.tonic} · {result.header.timeSignature.beats}/
-                  {result.header.timeSignature.beatType} · {formatTempoLabel(tempo)}
+                  Doh = {result.header.tonic}
+                  {result.header.mode === "minor" ? " (mineur)" : ""} ·{" "}
+                  {result.header.timeSignature.beats}/{result.header.timeSignature.beatType} ·{" "}
+                  {formatTempoLabel(tempo)}
                 </p>
               </header>
+            )}
+
+            {propertiesOpen && result && (
+              <ScorePropertiesModal
+                open={propertiesOpen}
+                score={result}
+                onClose={() => setPropertiesOpen(false)}
+                onApply={(draft, keyId) => void applyProperties(draft, keyId)}
+              />
             )}
 
             <div className={mode === "solfa" ? "p-2 sm:p-3" : "p-4"}>

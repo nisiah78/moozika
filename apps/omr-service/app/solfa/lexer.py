@@ -111,6 +111,30 @@ def is_triplet_beat(raw: str) -> bool:
     return bool(split_triplet_atoms(raw.strip()))
 
 
+def _split_syllable_atoms(token: str) -> List[str]:
+    """Découpe une cellule en syllabes sol-fa JUXTAPOSÉES (convention SANS espace) :
+    ``mf`` → [m, f], ``mfmr`` → [m, f, m, r], ``s,l`` → [s,, l] (le ``,`` collé à
+    une note reste l'octave grave, cf. _RHYTHM_COMMA_RE). ``m0`` → [m, 0] (note +
+    silence de sous-temps), ``-m`` → [-, m].
+
+    Renvoie [] si ce n'est PAS une pure juxtaposition de syllabes : présence d'un
+    ``.`` (demi-temps), d'un ``,`` RYTHMIQUE (silence de quart), d'un espace, ou
+    d'un caractère non reconnu → le découpage rythmique normal s'applique alors.
+    C'est l'inverse exact de l'écriture ``mf.mr`` produite par ``to_solfa``."""
+    s = token.strip()
+    if not s or "." in s or " " in s or _RHYTHM_COMMA_RE.search(s):
+        return []
+    out: List[str] = []
+    pos = 0
+    while pos < len(s):
+        m = _TRIPLET_ATOM_RE.match(s, pos)
+        if not m:
+            return []
+        out.append(m.group(0))
+        pos = m.end()
+    return out
+
+
 def _parse_triplet_beat(raw: str, total_divisions: int, span_beats: int = 1) -> List[Cell]:
     """3 notes dans ``total_divisions`` (1 ou 2 temps), avec time-modification 3:2."""
     atoms = split_triplet_atoms(raw.strip())
@@ -229,6 +253,21 @@ def _parse_beat(
                 else:
                     cells.append(Cell(kind="rest", divisions=quarter_div))
             else:
+                # Syllabes JUXTAPOSÉES (convention sans espace : ``mf`` = 2
+                # double-croches, ``mf.mr`` = 4) → subdivision égale. Valable AUSSI
+                # hors lenient : c'est une écriture valide, inverse de ``to_solfa``.
+                syls = _split_syllable_atoms(token)
+                if len(syls) > 1:
+                    subs = _split_parts(quarter_div, len(syls), raw, lenient)
+                    for atom, d in zip(syls, subs):
+                        if atom in ("-", "_"):
+                            cells.append(Cell(kind="hold", divisions=d))
+                        elif atom == "0":
+                            cells.append(Cell(kind="rest", divisions=d))
+                        else:
+                            cells.append(_parse_cell(atom, d))
+                    seen_content = True
+                    continue
                 # Correction grammaticale (lenient/OCR) : un token « mashé » ou
                 # espacé ('l,s,', 'f, r', 'm S', '-s') = plusieurs atomes → on le
                 # scinde en sous-cellules égales (comme une subdivision), au lieu
@@ -311,7 +350,16 @@ def tokenize(
 
     text = notation.replace("\r", " ").replace("\n", " ").strip()
     bars_raw = [b.strip() for b in text.split("|")]
-    bars_raw = [b for b in bars_raw if b != ""]
+    if not degrade:
+        # Saisie fiable : une mesure vide (`| |`) est un artefact de mise en forme.
+        bars_raw = [b for b in bars_raw if b != ""]
+    # Chemin degrade (OCR / barres vectorielles) : une mesure vide est une voix AU
+    # REPOS — silence pleine mesure à CONSERVER (sinon une voix qui entre tard voit
+    # ses mesures de tête supprimées et son contenu remonter à la mesure 1 →
+    # désalignement inter-voix). ``deferred`` : mesures vides rencontrées AVANT tout
+    # mètre connu (marqueur ``(N/M)`` placé plus loin) ; leur cap est résolu au
+    # mètre inféré (mode) après la boucle.
+    deferred: List[Tuple[int, int]] = []
 
     # Index rapide des triolets : (mesure, temps_départ) -> span 1|2
     triplet_at: dict = {}
@@ -358,6 +406,26 @@ def tokenize(
             break
         bar = bar.strip()
 
+        if degrade and not bar:
+            # Mesure vide = voix au repos → silence pleine mesure (préserve le
+            # compte de mesures et l'alignement inter-voix).
+            if cur_meter is not None:
+                pm = cur_meter.beats
+                cap = cur_meter.measure_divisions * division_scale
+                cells.append(Cell(kind="rest", divisions=cap))
+            else:
+                # Mètre pas encore connu (vides de tête) : cap résolu après la boucle.
+                cap = 0
+                pm = 0
+                deferred.append((len(cells), len(bars)))
+                cells.append(Cell(kind="rest", divisions=0))
+            bars.append(
+                BarMeta(cap=cap, pulses=pm, time_sig=time_sig, key_tonic=bar_key_tonic)
+            )
+            # NB : pas ajouté à ``bar_pulses`` (une mesure de repos ne doit pas peser
+            # sur le mode qui infère le mètre).
+            continue
+
         cell_start = len(cells)
         beat_divisions = (
             cur_meter.beat_divisions if cur_meter is not None else DIVISIONS_PER_BEAT
@@ -372,7 +440,12 @@ def tokenize(
             beat = beats[bi_tok]
             span = 1
             try:
-                if is_triplet_beat(beat):
+                # Ne traiter un temps comme TRIOLET que si la grille ×3 est active
+                # (``division_scale >= 3``). Sinon (degrade/OCR, triolets désactivés)
+                # un « faux triolet » (3 syllabes collées par bruit OCR) serait parsé
+                # dans une grille binaire de 4 → ``4/3`` non représentable → voix jetée.
+                # On le laisse alors au parsing normal (juxtaposition/degrade).
+                if division_scale >= 3 and is_triplet_beat(beat):
                     span = triplet_at.get((mi, bi_logic), 1)
                     cells.extend(
                         _parse_triplet_beat(beat, beat_divisions * span, span)
@@ -422,5 +495,14 @@ def tokenize(
         beats_per_measure = max(v for v, c in counts.items() if c == top)
     else:
         beats_per_measure = 0
+
+    # Mesures de repos rencontrées avant tout mètre connu : les remplir au mètre
+    # inféré (mode) — une pleine mesure de silence, cap aligné sur les voix qui chantent.
+    if deferred and beats_per_measure > 0:
+        default_cap = beats_per_measure * DIVISIONS_PER_BEAT * division_scale
+        for ci, bi in deferred:
+            cells[ci].divisions = default_cap
+            bars[bi].cap = default_cap
+            bars[bi].pulses = beats_per_measure
 
     return cells, beats_per_measure, bars

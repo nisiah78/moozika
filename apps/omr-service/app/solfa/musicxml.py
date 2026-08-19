@@ -32,16 +32,29 @@ def _sub(parent: ET.Element, tag: str, text=None) -> ET.Element:
     return el
 
 
-def _append_attributes(measure_el: ET.Element, model: ScoreModel) -> None:
+def _append_key(key_el: ET.Element, model: ScoreModel) -> None:
+    _sub(key_el, "fifths", model.fifths)
+    if getattr(model, "mode", "major") == "minor":
+        _sub(key_el, "mode", "minor")
+
+
+def _append_attributes(measure_el: ET.Element, model: ScoreModel, first_measure=None) -> None:
     attrs = _sub(measure_el, "attributes")
     _sub(attrs, "divisions", model.divisions)
 
     key = _sub(attrs, "key")
-    _sub(key, "fifths", model.fifths)
+    _append_key(key, model)
 
+    # Le chiffrage de tête suit la 1ʳᵉ mesure quand elle en porte un (métrique
+    # variable : la mesure 1 peut être 5/16 alors que le mètre « prédominant »
+    # du modèle est autre) — sinon l'en-tête et la mesure se contrediraient.
+    if first_measure is not None and first_measure.time_signature is not None:
+        beats, beat_type = first_measure.time_signature
+    else:
+        beats, beat_type = model.beats, model.beat_type
     time = _sub(attrs, "time")
-    _sub(time, "beats", model.beats)
-    _sub(time, "beat-type", model.beat_type)
+    _sub(time, "beats", beats)
+    _sub(time, "beat-type", beat_type)
 
     sign, line = _CLEFS.get(model.clef, _CLEFS["treble"])
     clef = _sub(attrs, "clef")
@@ -63,6 +76,7 @@ def _append_measure_attribute_changes(measure_el: ET.Element, measure) -> None:
     if need_key:
         key = _sub(attrs, "key")
         _sub(key, "fifths", measure.key_fifths)
+        # mode non suivi par mesure en v1 — armure seule.
     if need_time:
         beats, beat_type = measure.time_signature
         time = _sub(attrs, "time")
@@ -80,20 +94,29 @@ def _append_tempo(measure_el: ET.Element, tempo: int) -> None:
     ET.SubElement(direction, "sound", {"tempo": str(tempo)})
 
 
+def _write_pitch(parent: ET.Element, pitch: "Pitch") -> None:
+    pitch_el = _sub(parent, "pitch")
+    _sub(pitch_el, "step", pitch.step)
+    if pitch.alter:
+        _sub(pitch_el, "alter", pitch.alter)
+    _sub(pitch_el, "octave", pitch.octave)
+
+
 def _append_note(measure_el: ET.Element, note: NoteEl) -> None:
     note_el = _sub(measure_el, "note")
+
+    # Note d'agrément : marquée <grace/> et SANS <duration> (hors grille rythmique).
+    if note.grace:
+        _sub(note_el, "grace")
 
     if note.is_rest:
         _sub(note_el, "rest")
     else:
-        pitch = note.pitch
-        pitch_el = _sub(note_el, "pitch")
-        _sub(pitch_el, "step", pitch.step)
-        if pitch.alter:
-            _sub(pitch_el, "alter", pitch.alter)
-        _sub(pitch_el, "octave", pitch.octave)
+        _write_pitch(note_el, note.pitch)
 
-    _sub(note_el, "duration", note.duration)
+    # Une note d'agrément n'a pas de durée en MusicXML.
+    if not note.grace:
+        _sub(note_el, "duration", note.duration)
 
     if note.tie_stop:
         ET.SubElement(note_el, "tie", {"type": "stop"})
@@ -138,6 +161,22 @@ def _append_note(measure_el: ET.Element, note: NoteEl) -> None:
         lyric_el = _sub(note_el, "lyric")
         _sub(lyric_el, "syllabic", "single")
         _sub(lyric_el, "text", note.lyric)
+
+    # Notes d'accord (verticales) : chaque hauteur supplémentaire = une <note> sœur
+    # marquée <chord/>, même durée/type que la note principale. Sans cela un accord
+    # SATB condensé perdrait toutes ses voix sauf la note du haut.
+    if not note.is_rest and note.chord_pitches:
+        for cp in note.chord_pitches:
+            ch_el = _sub(measure_el, "note")
+            if note.grace:
+                _sub(ch_el, "grace")
+            _sub(ch_el, "chord")
+            _write_pitch(ch_el, cp)
+            if not note.grace:
+                _sub(ch_el, "duration", note.duration)
+            _sub(ch_el, "type", note.note_type)
+            for _ in range(note.dots):
+                _sub(ch_el, "dot")
 
 
 def _append_direction(measure_el: ET.Element, d) -> None:
@@ -237,7 +276,7 @@ def _append_part(root: ET.Element, model: ScoreModel, part_id: str) -> None:
             attrs["implicit"] = "yes"   # mesure de levée (anacrouse)
         measure_el = ET.SubElement(part, "measure", attrs)
         if i == 0:
-            _append_attributes(measure_el, model)
+            _append_attributes(measure_el, model, measure)
             if model.tempo:
                 _append_tempo(measure_el, model.tempo)
         else:
@@ -260,17 +299,21 @@ def _serialize(root: ET.Element) -> str:
 
 
 def build_multi(
-    models: List[ScoreModel], *, title: str = "", composer: str = ""
+    models: List[ScoreModel], *, title: str = "", composer: str = "", work: str = ""
 ) -> ET.Element:
     """Assemble plusieurs voix en un seul score-partwise (une partie par voix).
 
-    ``title``/``composer`` alimentent l'en-tête MusicXML (``<work-title>`` /
-    ``<creator type="composer">``) — sinon l'éditeur affiche « Untitled Score »."""
+    ``title``/``composer``/``work`` alimentent l'en-tête MusicXML (``<work-title>`` /
+    ``<work-number>`` / ``<creator type="composer">``) — sinon l'éditeur affiche
+    « Untitled Score »."""
     root = ET.Element("score-partwise", {"version": "4.0"})
     # Ordre DTD : work / identification AVANT part-list.
-    if title:
-        work = _sub(root, "work")
-        _sub(work, "work-title", title)
+    if title or work:
+        work_el = _sub(root, "work")
+        if title:
+            _sub(work_el, "work-title", title)
+        if work:
+            _sub(work_el, "work-number", work)
     if composer:
         ident = _sub(root, "identification")
         creator = _sub(ident, "creator", composer)
@@ -286,12 +329,26 @@ def build_multi(
 
 
 def to_musicxml_multi(
-    models: List[ScoreModel], *, title: str = "", composer: str = ""
+    models: List[ScoreModel], *, title: str = "", composer: str = "", work: str = ""
 ) -> str:
     if not models:
         raise ValueError("aucune voix à sérialiser")
-    return _serialize(build_multi(models, title=title, composer=composer))
+    return _serialize(build_multi(models, title=title, composer=composer, work=work))
 
 
-def to_musicxml(model: ScoreModel, *, title: str = "", composer: str = "") -> str:
-    return to_musicxml_multi([model], title=title, composer=composer)
+def to_musicxml(model: ScoreModel, *, title: str = "", composer: str = "", work: str = "") -> str:
+    return to_musicxml_multi([model], title=title, composer=composer, work=work)
+
+
+def read_score_metadata(root: ET.Element) -> dict:
+    """Extrait titre, compositeur et œuvre depuis la racine score-partwise."""
+    title = (root.findtext("work/work-title") or "").strip()
+    work = (root.findtext("work/work-number") or "").strip()
+    composer = ""
+    ident = root.find("identification")
+    if ident is not None:
+        for creator in ident.findall("creator"):
+            if creator.get("type") == "composer":
+                composer = (creator.text or "").strip()
+                break
+    return {"title": title, "composer": composer, "work": work}

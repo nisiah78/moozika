@@ -259,12 +259,16 @@ class TestDotOnlySubdivision(unittest.TestCase):
     """Le rendu n'utilise que '.' pour subdiviser ; le ',' reste réservé à
     l'octave grave. Les silences de sous-temps utilisent '0'."""
 
-    def test_four_sixteenths_use_dots_not_commas(self):
+    def test_four_sixteenths_use_juxtaposition(self):
+        # 4 double-croches dans un temps = 2 demis JUXTAPOSÉS (``dr.mf``), et NON
+        # ``d.r.m.f`` (3 points = 2 temps dans une case de 1) ni des virgules
+        # (``d,r`` = octave grave). Règle sol-fa : un seul point par temps.
         m = parse_solfa("d.r.m.f : s : l : t", tonic="C")
         text = to_solfa(m)
-        self.assertEqual(text.split(" : ")[0], "d.r.m.f")
-        # aucune virgule (ni rythme ni octave ici)
-        self.assertNotIn(",", text)
+        b0 = text.split(" : ")[0]
+        self.assertEqual(b0, "dr.mf")
+        self.assertLessEqual(b0.count("."), 1)   # un seul demi-temps par temps
+        self.assertNotIn(",", text)              # ni rythme ni octave ici
         _assert_models_equal(self, m, parse_solfa(text, tonic="C"))
 
     def test_grave_note_keeps_octave_comma_only(self):
@@ -320,7 +324,7 @@ class TestEighthGridOption(unittest.TestCase):
         m = parse_solfa("d.r.m.f : s : l : t", tonic="C")
         b0_full = to_solfa(m).split(" : ")[0]
         b0_eighth = to_solfa(m, min_cell=2).split(" : ")[0]
-        self.assertEqual(b0_full, "d.r.m.f")   # min_cell=1 par défaut (16e)
+        self.assertEqual(b0_full, "dr.mf")   # min_cell=1 par défaut (16e, demis juxtaposés)
         # 8e : on garde les notes SUR la grille (positions 0 et 2 = d et m).
         self.assertEqual(b0_eighth, "d.m")
 

@@ -24,9 +24,11 @@ Nouvelle version après édition : `{ title?, tonic?, origin?, musicxml, model? 
 
 ## `POST /convert/model-to-musicxml`
 
-Body : `{ models: ScoreModel[], title? }`  
+Body : `{ models: ScoreModel[], title?, composer?, work? }`  
 Réponse : `{ musicxml, voices: [{ name, notation, model }] }`  
 Symfony relaie vers `omr-service` `POST /musicxml/from-models`.
+
+Le champ `model.header` peut aussi porter : `composer`, `work`, `mode`, `fifths`.
 
 ## `POST /convert/solfa-parse`
 

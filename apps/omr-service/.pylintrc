@@ -1,0 +1,35 @@
+# Config pylint — Niveau 2 de la porte pré-commit (`make lint-py`, /pr-check).
+#
+# POURQUOI un .pylintrc et pas [tool.pylint] dans pyproject.toml : pyproject.toml
+# est COPIÉ dans l'image `base` du Dockerfile. Y toucher invalide la couche qui
+# installe torch + paddleocr et pré-télécharge les modèles TrOCR/PaddleOCR →
+# ~10 min de rebuild pour régler une règle de style. Ce fichier est monté au
+# runtime (cf. compose.yml, service omr-lint) : le régler ne rebuild rien.
+#
+# pylint est un outil de DÉVELOPPEMENT, jamais importé par le code : la contrainte
+# « app/solfa sans aucune dépendance externe » (CLAUDE.md) reste entière.
+
+[MAIN]
+ignore-paths=^app/inspect_.*\.py$,^app/dump_.*\.py$
+
+[BASIC]
+# `bar` (dans le défaut foo/bar/baz de pylint) est du VOCABULAIRE MÉTIER ici :
+# une « bar » est une MESURE en notation musicale. 18 faux positifs sans ça.
+bad-names=foo,baz,toto,tutu,tata
+
+[FORMAT]
+# Mesuré sur le code existant : p99 = 88 caractères, max = 115, 12 lignes > 100.
+max-line-length=100
+
+[MESSAGES CONTROL]
+disable=duplicate-code,
+        fixme,
+        too-few-public-methods,
+# Les imports tardifs sont un choix d'architecture, pas un defaut : ils gardent
+# app/solfa sans dependance externe et rendent les deps OCR optionnelles
+# (contrainte CLAUDE.md). 14 occurrences.
+        import-outside-toplevel,
+# Docstrings de fonctions/classes internes : 69 occurrences, poste le plus gros
+# du score. Les MODULES restent documentes (missing-module-docstring actif).
+        missing-function-docstring,
+        missing-class-docstring

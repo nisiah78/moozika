@@ -25,9 +25,10 @@ Module volontairement SANS dépendance (stdlib seule) → testable hors conteneu
 """
 from __future__ import annotations
 
+import copy
 import xml.etree.ElementTree as ET
 from collections import Counter
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Demi-tons approx pour classer les parts récupérées (aigu → slot du haut).
 _STEP = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
@@ -86,6 +87,208 @@ def _part_names(root: ET.Element) -> dict:
     return out
 
 
+# Programmes General MIDI (1-based) de clavier : pianos/clavecin/célesta 1-8,
+# orgues 17-24. Un tel timbre = accompagnement, pas une voix chantée.
+_KEYBOARD_MIDI = frozenset(range(1, 9)) | frozenset(range(17, 25))
+
+
+def _part_meta(root: ET.Element) -> List[dict]:
+    """Métadonnées structurelles par part, ALIGNÉES sur ``root.findall('part')``.
+
+    ``accomp`` = ``staves>=2`` (grand portée = clavier) OU timbre clavier OU nom
+    piano/orgue. C'est le signal qui empêche un accompagnement de remplir un slot
+    de voix chantée lors de la fusion (cause du bug « orgue → Ténor/Basse »)."""
+    names: dict = {}
+    midis: dict = {}
+    for sp in root.findall("part-list/score-part"):
+        pid = sp.get("id")
+        names[pid] = sp.findtext("part-name") or ""
+        mp = sp.findtext("midi-instrument/midi-program")
+        try:
+            midis[pid] = int(mp) if mp else None
+        except ValueError:
+            midis[pid] = None
+    out: List[dict] = []
+    for p in root.findall("part"):
+        pid = p.get("id")
+        staves = 1
+        for m in p.findall("measure"):
+            for a in m.findall("attributes"):
+                s = a.findtext("staves")
+                if s:
+                    try:
+                        staves = max(staves, int(s))
+                    except ValueError:
+                        pass
+        name = names.get(pid, "")
+        midi = midis.get(pid)
+        accomp = (staves >= 2) or (midi in _KEYBOARD_MIDI) or _looks_like_piano(name)
+        out.append(
+            {"id": pid, "name": name, "midi": midi, "staves": staves, "accomp": accomp}
+        )
+    return out
+
+
+# ── Dé-condensation SATB (levier n°1) ───────────────────────────────────────
+# Audiveris rend souvent un chœur SATB CONDENSÉ : Soprano+Alto (ou Ténor+Basse)
+# écrits sur UNE seule portée, en 2 <voice> distinctes. Une telle part occupe
+# alors UN seul slot de voix à la fusion → l'Alto (voix du bas) est écrasé/perdu
+# et le mapping de slot devient incohérent d'un système à l'autre (S+A condensé
+# vs S/A séparés en divisi). On sépare donc, AVANT le mapping, toute part vocale
+# à ≥2 voix substantielles en autant de parts mono-voix (triées aigu→grave),
+# pour que slot0=Soprano, slot1=Alto… restent stables sur toute la partition.
+# Le cas « Ténor+Basse en ACCORDS sur 1 portée » reste géré en aval par
+# from_musicxml._split_chord_streams (phase 2).
+
+def _voice_note_counts(measures: List[ET.Element]) -> Counter:
+    """Notes chantées (hors silence, accord, agrément) par <voice>."""
+    c: Counter = Counter()
+    for m in measures:
+        for n in m.findall("note"):
+            if (n.find("rest") is not None or n.find("chord") is not None
+                    or n.find("grace") is not None):
+                continue
+            c[n.findtext("voice") or "1"] += 1
+    return c
+
+
+def _voice_median_pitch(measures: List[ET.Element], voice: str) -> float:
+    """Hauteur médiane approx des notes d'une voix (pour trier par tessiture)."""
+    hs: List[int] = []
+    for m in measures:
+        for n in m.findall("note"):
+            if (n.findtext("voice") or "1") != voice:
+                continue
+            p = n.find("pitch")
+            if p is None:
+                continue
+            step = (p.findtext("step") or "C").strip().upper()
+            try:
+                octave = int(p.findtext("octave", "4") or "4")
+                alter = int(float(p.findtext("alter", "0") or "0"))
+            except ValueError:
+                continue
+            hs.append(octave * 12 + _STEP.get(step, 0) + alter)
+    if not hs:
+        return 0.0
+    hs.sort()
+    return float(hs[len(hs) // 2])
+
+
+def _condensed_clusters(measures: List[ET.Element]) -> Optional[List[List[str]]]:
+    """Détecte un SATB condensé (≥2 voix substantielles sur 1 portée) et renvoie
+    les clusters de voix à séparer, un par voix substantielle, TRIÉS aigu→grave.
+    Chaque voix mineure (bruit OMR / bref reliquat) est rattachée au cluster
+    substantiel le plus proche en tessiture — AUCUNE note n'est perdue. Renvoie
+    None si la part n'est pas condensée (0 ou 1 voix substantielle)."""
+    counts = _voice_note_counts(measures)
+    if len(counts) < 2:
+        return None
+    total = sum(counts.values())
+    # Conservateur : une vraie 2e voix pèse une fraction notable du total ; en
+    # deçà, c'est un artefact d'OMR (numéro de voix parasite) → pas une voix SATB.
+    thresh = max(4, int(total * 0.15))
+    substantial = sorted(
+        (v for v, c in counts.items() if c >= thresh),
+        key=lambda v: _voice_median_pitch(measures, v),
+        reverse=True,
+    )
+    if len(substantial) < 2:
+        return None
+    clusters: Dict[str, List[str]] = {v: [v] for v in substantial}
+    sub_med = {v: _voice_median_pitch(measures, v) for v in substantial}
+    for v in counts:
+        if v in clusters:
+            continue
+        mv = _voice_median_pitch(measures, v)
+        nearest = min(substantial, key=lambda s: abs(sub_med[s] - mv))
+        clusters[nearest].append(v)
+    return [clusters[v] for v in substantial]
+
+
+def _rebuild_measure(measure_el: ET.Element, voices: List[str]) -> ET.Element:
+    """Reconstruit une mesure ne gardant que ``voices`` (ordre = voice 1, 2…),
+    avec des <backup> propres entre voix. Conserve les enfants partagés
+    (attributes, direction, print…) en tête et <barline> en fin ; supprime les
+    <backup>/<forward> d'origine (recalculés). Les silences par voix sont
+    conservés (aucune note perdue)."""
+    nm = ET.Element("measure", dict(measure_el.attrib))
+    leading: List[ET.Element] = []
+    trailing: List[ET.Element] = []
+    notes_by_v: Dict[str, List[ET.Element]] = {}
+    for child in measure_el:
+        if child.tag == "note":
+            notes_by_v.setdefault(child.findtext("voice") or "1", []).append(child)
+        elif child.tag in ("backup", "forward"):
+            continue
+        elif child.tag == "barline":
+            trailing.append(child)
+        else:
+            leading.append(child)
+    for c in leading:
+        nm.append(copy.deepcopy(c))
+    written = [v for v in voices if notes_by_v.get(v)]
+    for i, v in enumerate(written):
+        if i > 0:
+            prev = notes_by_v[written[i - 1]]
+            dur = sum(int(n.findtext("duration", "0") or 0)
+                      for n in prev if n.find("chord") is None)
+            if dur > 0:
+                ET.SubElement(ET.SubElement(nm, "backup"), "duration").text = str(dur)
+        for n in notes_by_v[v]:
+            nc = copy.deepcopy(n)
+            ve = nc.find("voice")
+            if ve is None:
+                ve = ET.SubElement(nc, "voice")
+            ve.text = str(i + 1)
+            nm.append(nc)
+    for c in trailing:
+        nm.append(copy.deepcopy(c))
+    return nm
+
+
+def _decondense_root(root: ET.Element) -> None:
+    """Sépare en place toute part VOCALE condensée (≥2 voix) en parts mono-voix
+    (aigu→grave). Met à jour part-list et l'ordre des <part>. No-op sinon."""
+    plist = root.find("part-list")
+    if plist is None:
+        return
+    metas = _part_meta(root)               # aligné à root.findall('part')
+    parts = root.findall("part")
+    sp_by_id = {sp.get("id"): sp for sp in plist.findall("score-part")}
+    rebuilt: List[tuple] = []              # (score_part | None, part_el)
+    changed = False
+    for meta, part in zip(metas, parts):
+        pid = meta["id"]
+        measures = part.findall("measure")
+        clusters = None if meta["accomp"] else _condensed_clusters(measures)
+        if clusters and len(clusters) >= 2:
+            for k, cluster in enumerate(clusters):
+                nid = f"{pid}_v{k + 1}"
+                np = ET.Element("part", {"id": nid})
+                for m in measures:
+                    np.append(_rebuild_measure(m, cluster))
+                sp = sp_by_id.get(pid)
+                nsp = copy.deepcopy(sp) if sp is not None else ET.Element(
+                    "score-part", {"id": nid})
+                nsp.set("id", nid)
+                rebuilt.append((nsp, np))
+            changed = True
+        else:
+            rebuilt.append((sp_by_id.get(pid), part))
+    if not changed:
+        return
+    for sp in plist.findall("score-part"):
+        plist.remove(sp)
+    for nsp, _ in rebuilt:
+        if nsp is not None:
+            plist.append(nsp)
+    for p in root.findall("part"):
+        root.remove(p)
+    for _, p in rebuilt:
+        root.append(p)
+
+
 def merge_musicxml(pages: List[str]) -> str:
     """Recolle les MusicXML page-par-page en un seul score-partwise.
 
@@ -100,49 +303,95 @@ def merge_musicxml(pages: List[str]) -> str:
     for xml in pages:
         r = ET.fromstring(xml)
         strip_ns(r)
+        _decondense_root(r)   # SATB condensé → parts mono-voix (avant le mapping)
         roots.append(r)
 
     counts = [len(r.findall("part")) for r in roots]
     counts = [c for c in counts if c > 0]
     if not counts:
         raise ValueError("aucune part exploitable dans les pages")
-    base_count = Counter(counts).most_common(1)[0][0]
-    base = next(r for r in roots if len(r.findall("part")) == base_count)
+    # Base = structure la plus FRÉQUENTE… SAUF si une (ou des) page(s) porte(nt)
+    # PLUS de parties AVEC DU VRAI CONTENU (divisi : chaque voix passe sur sa propre
+    # portée sur quelques pages, ex. jubilate m62-71). Dans ce cas on adopte la
+    # structure LARGE comme base, pour ne pas écraser les voix du divisi. Un simple
+    # « plus de parts » ne suffit pas : Audiveris ajoute parfois une part de silence
+    # parasite — on exige que ces parts supplémentaires contiennent des NOTES.
+    def _part_notes(part_el: ET.Element) -> bool:
+        return any(_has_notes(m) for m in part_el.findall("measure"))
+
+    # Base = la page qui porte le PLUS de parties AVEC DE VRAIES NOTES. Sur une
+    # partition condensée puis en divisi (jubilate : 3 portées, puis 4 voix + piano
+    # aux mesures 62-71), c'est la page de divisi qui définit la structure LARGE —
+    # sinon on collapse tout sur les 3 portées et on écrase les voix divisées. Le
+    # critère « avec notes » ignore une part de silence parasite (Audiveris en ajoute
+    # parfois une) : elle ne doit pas gonfler la base (cf. test synthétique tout-silence
+    # qui reste à 3). À égalité, la 1re page de structure la plus fréquente gagne.
+    common = Counter(counts).most_common(1)[0][0]
+    base = next(r for r in roots if len(r.findall("part")) == common)
+    best_notes = sum(1 for p in base.findall("part") if _part_notes(p))
+    for r in roots:
+        with_notes = sum(1 for p in r.findall("part") if _part_notes(p))
+        if with_notes > best_notes:
+            base, best_notes = r, with_notes
+    base_count = len(base.findall("part"))
     part_ids = [p.get("id") for p in base.findall("part")]
+
+    # Rôle de chaque slot de base (aligné à part_ids) → les slots de voix et
+    # d'accompagnement sont alimentés SÉPARÉMENT (cf. boucle) pour qu'un
+    # accompagnement ne tombe jamais dans un slot de voix.
+    base_roles = [m["accomp"] for m in _part_meta(base)]
+    base_vocal_slots = [i for i, a in enumerate(base_roles) if not a]
+    base_accomp_slots = [i for i, a in enumerate(base_roles) if a]
 
     merged: dict = {slot: [] for slot in range(base_count)}
     global_num = 0
     for r in roots:
         parts = r.findall("part")
-        names = _part_names(r)
+        metas = _part_meta(r)  # aligné à parts
         part_measures = [p.findall("measure") for p in parts]
         n_local = max((len(ms) for ms in part_measures), default=0)
-        n_primary = min(base_count, len(parts))
+
+        # Assignation STABLE part→slot PAR RÔLE (remplace le mapping par index) :
+        # les parts vocales remplissent les slots vocaux (dans l'ordre), les
+        # accompagnements les slots d'accompagnement. Un accompagnement ne peut
+        # donc JAMAIS occuper un slot de voix — c'était le bug (page à 2 parts :
+        # l'orgue, en position 1, tombait dans un slot « Voice »). Les parts
+        # vocales surnuméraires alimentent la récupération divisi.
+        target: dict = {}          # index de part → slot de base
+        extra_vocal: List[int] = []
+        vi = ai = 0
+        for pi, meta in enumerate(metas):
+            if meta["accomp"]:
+                if ai < len(base_accomp_slots):
+                    target[pi] = base_accomp_slots[ai]
+                    ai += 1
+                # accompagnement surnuméraire (pas de slot) → ignoré ici
+            elif vi < len(base_vocal_slots):
+                target[pi] = base_vocal_slots[vi]
+                vi += 1
+            else:
+                extra_vocal.append(pi)
 
         for li in range(n_local):
             global_num += 1
             slots: List[Optional[ET.Element]] = [None] * base_count
 
-            # 1. Mapping par POSITION : slot i ← part i (même si c'est un silence).
-            for slot in range(n_primary):
-                ms = part_measures[slot]
+            # 1. Mapping stable par rôle (jamais un accompagnement dans une voix).
+            for pi, slot in target.items():
+                ms = part_measures[pi]
                 if li < len(ms):
                     slots[slot] = ms[li]
 
-            # 2. RÉCUPÉRATION divisi : contenu des parts au-delà de la base, placé
-            #    dans les slots VIDES (aigu → haut). Le piano est écarté pour ne
-            #    pas polluer un slot de voix.
+            # 2. RÉCUPÉRATION divisi : parts VOCALES surnuméraires → slots VOCAUX
+            #    vides (aigu → haut). Restreinte aux slots de voix.
             extras = []
-            for pi in range(base_count, len(parts)):
+            for pi in extra_vocal:
                 ms = part_measures[pi]
-                if li >= len(ms):
-                    continue
-                mel = ms[li]
-                if _has_notes(mel) and not _looks_like_piano(names.get(parts[pi].get("id"))):
-                    extras.append((_median_pitch(mel), mel))
+                if li < len(ms) and _has_notes(ms[li]):
+                    extras.append((_median_pitch(ms[li]), ms[li]))
             extras.sort(key=lambda e: e[0], reverse=True)
             ei = 0
-            for slot in range(base_count):
+            for slot in base_vocal_slots:
                 if ei >= len(extras):
                     break
                 cur = slots[slot]

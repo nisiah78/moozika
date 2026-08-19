@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+#
+# Filet de sécurité pour les commits faits À LA MAIN (hors Claude Code).
+# Budget : < 5 s. Il ne lance NI tests NI lint — un hook lent se contourne au
+# `--no-verify`, ce qui le rend inutile. La porte complète (tests + score) est
+# le travail de `make gate` / du skill /pr-check.
+#
+# Activation (une fois par clone) :   make hooks
+# Contournement volontaire :          git commit --no-verify
+
+set -uo pipefail
+
+RED='\033[0;31m'; YEL='\033[0;33m'; NC='\033[0m'
+fail=0
+
+staged() { git diff --cached --name-only --diff-filter=ACMR; }
+
+# --- 1. Index vide --------------------------------------------------------- #
+if [ -z "$(staged)" ]; then
+    printf "${RED}✗ index vide${NC} — rien à committer (utilise 'git add <fichiers>').\n"
+    exit 1
+fi
+
+# --- 2. Artefacts qui ne doivent jamais entrer dans un commit -------------- #
+while IFS= read -r f; do
+    case "$(basename "$f")" in
+        _debug_*.ndjson|*.orig|*.rej|*.pyc|*.log)
+            printf "${RED}✗ artefact interdit indexé${NC} : %s\n" "$f"
+            fail=1
+            ;;
+    esac
+done < <(staged)
+
+# --- 3. Syntaxe Python ----------------------------------------------------- #
+# ast.parse et non py_compile : py_compile écrit un .pyc, et le __pycache__ de
+# apps/omr-service/app appartient à root (ancien run Docker) → Permission denied.
+py=$(staged | grep -E '\.py$' || true)
+if [ -n "$py" ]; then
+    # shellcheck disable=SC2086
+    if ! python3 scripts/quality/syntax_check.py $py 2>/tmp/moozika-hook-py.err; then
+        printf "${RED}✗ syntaxe python${NC}\n"
+        sed 's/^/    /' /tmp/moozika-hook-py.err
+        fail=1
+    fi
+fi
+
+# --- 4. Syntaxe PHP -------------------------------------------------------- #
+php=$(staged | grep -E '\.php$' || true)
+if [ -n "$php" ] && command -v php >/dev/null 2>&1; then
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        if ! php -l "$f" >/tmp/moozika-hook-php.err 2>&1; then
+            printf "${RED}✗ php -l${NC} %s\n" "$f"
+            sed 's/^/    /' /tmp/moozika-hook-php.err
+            fail=1
+        fi
+    done <<< "$php"
+fi
+
+# --- 5. Rappel : le hook ne remplace pas la porte -------------------------- #
+if [ "$fail" -eq 0 ]; then
+    printf "${YEL}·${NC} hook OK (syntaxe seule). Porte complète : ${YEL}make gate${NC} ou /pr-check\n"
+fi
+
+exit "$fail"

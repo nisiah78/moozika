@@ -56,6 +56,17 @@ export function createScore(body: {
   return api("/scores", { method: "POST", body: JSON.stringify(body) });
 }
 
+export async function deleteScore(id: string): Promise<void> {
+  const res = await fetch(`${API_URL}/scores/${id}`, {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { detail?: string };
+    throw new Error(data.detail || `HTTP ${res.status}`);
+  }
+}
+
 export function addScoreVersion(
   id: string,
   body: {
@@ -69,14 +80,32 @@ export function addScoreVersion(
   return api(`/scores/${id}/versions`, { method: "POST", body: JSON.stringify(body) });
 }
 
-export function modelToMusicxml(models: Voice["model"][], title: string): Promise<{
+export function modelToMusicxml(
+  models: Voice["model"][],
+  meta: ModelToMusicxmlMeta | string,
+): Promise<{
   musicxml: string;
   voices: Voice[];
 }> {
+  const body =
+    typeof meta === "string"
+      ? { models, title: meta }
+      : {
+          models,
+          title: meta.title ?? "",
+          composer: meta.composer ?? "",
+          work: meta.work ?? "",
+        };
   return api("/convert/model-to-musicxml", {
     method: "POST",
-    body: JSON.stringify({ models, title }),
+    body: JSON.stringify(body),
   });
+}
+
+export interface ModelToMusicxmlMeta {
+  title?: string;
+  composer?: string;
+  work?: string;
 }
 
 export function detailToScoreResult(detail: ScoreDetail): ScoreResult {
@@ -84,7 +113,11 @@ export function detailToScoreResult(detail: ScoreDetail): ScoreResult {
   return {
     header: {
       title: h?.title || detail.title,
+      composer: h?.composer,
+      work: h?.work,
       tonic: h?.tonic || detail.tonic,
+      mode: h?.mode,
+      fifths: h?.fifths ?? detail.voices?.[0]?.model?.fifths,
       timeSignature: h?.timeSignature || { beats: 4, beatType: 4 },
       tempo: h?.tempo ?? null,
       tempoBeatUnit: h?.tempoBeatUnit ?? null,

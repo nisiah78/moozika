@@ -109,10 +109,16 @@ def classify_meter(numerator: int, denominator: int) -> Meter:
         # Croches : même capacité MusicXML que l'ancien 6/8 composé (12 div),
         # mais 6 pulsations sol-fa pour coller aux recueils malgaches.
         return Meter(numerator, 8, 2, False)
-    if denominator in (8, 16) and numerator % 3 == 0 and numerator > 3:
-        return Meter(numerator // 3, denominator, COMPOUND_DIVISIONS_PER_BEAT, True)
+    if denominator == 8 and numerator % 3 == 0 and numerator > 3:
+        return Meter(numerator // 3, 8, COMPOUND_DIVISIONS_PER_BEAT, True)
     if denominator == 4 and numerator in (2, 3, 4, 5):
         return Meter(numerator, denominator, DIVISIONS_PER_BEAT, False)
+    if denominator == 16 and 1 <= numerator <= 24:
+        # Mètre à la double-croche (5/16, 7/16, 12/16…), fréquent dans les fihirana
+        # à métrique variable. TOUJOURS simple : chaque pulsation = 1 double-croche
+        # (1 division), N pulsations — pas de lecture composée (÷3) qui doublerait
+        # la capacité de la mesure.
+        return Meter(numerator, 16, 1, False)
     raise MeterError(f"mesure non supportée en v1: {numerator}/{denominator}")
 
 

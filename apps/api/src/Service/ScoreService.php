@@ -111,6 +111,37 @@ class ScoreService
         return $this->scores->findOneById($id);
     }
 
+    /**
+     * Supprime la partition (versions SQL via ON DELETE CASCADE) puis les
+     * objets MusicXML MinIO. On n'hydrate pas model_json.
+     */
+    public function delete(Score $score): void
+    {
+        $keys = $this->versions->findMusicxmlKeysForScore($score);
+
+        $this->em->createQueryBuilder()
+            ->delete(Score::class, 's')
+            ->where('s.id = :id')
+            ->setParameter('id', $score->getId())
+            ->getQuery()
+            ->execute();
+
+        if ($this->em->contains($score)) {
+            $this->em->detach($score);
+        }
+
+        foreach ($keys as $key) {
+            if ($key === '') {
+                continue;
+            }
+            try {
+                $this->storage->delete($key);
+            } catch (\Throwable) {
+                // best-effort : la ligne Postgres est déjà partie
+            }
+        }
+    }
+
     public function latestVersion(Score $score): ?ScoreVersion
     {
         $versions = $score->getVersions();

@@ -41,4 +41,22 @@ class ScoreVersionRepository extends ServiceEntityRepository
 
         return (int) ($max ?? 0);
     }
+
+    /**
+     * Clés MinIO uniquement — n'hydrate pas model_json.
+     *
+     * @return list<string>
+     */
+    public function findMusicxmlKeysForScore(Score $score): array
+    {
+        /** @var list<string> $keys */
+        $keys = $this->createQueryBuilder('v')
+            ->select('v.musicxmlKey')
+            ->andWhere('v.score = :score')
+            ->setParameter('score', $score)
+            ->getQuery()
+            ->getSingleColumnResult();
+
+        return $keys;
+    }
 }

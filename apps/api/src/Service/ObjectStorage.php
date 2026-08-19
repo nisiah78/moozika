@@ -53,6 +53,14 @@ class ObjectStorage
         return $result->getBody()->getContentAsString();
     }
 
+    public function delete(string $key): void
+    {
+        $this->client->deleteObject([
+            'Bucket' => $this->bucket,
+            'Key' => $key,
+        ]);
+    }
+
     public function ensureBucket(): void
     {
         try {
