@@ -98,8 +98,8 @@ Deux niveaux, volontairement séparés :
 
 | Niveau | Contenu | Tolérance |
 | --- | --- | --- |
-| **1 — bloquant** | tests du stack, `tsc --noEmit`, `php -l`, syntaxe Python | **zéro** — du code qui ne compile pas ou dont les tests échouent ne passe jamais |
-| **2 — scoré** | pylint / phpstan + php-cs-fixer / eslint | note sur 10, seuil dans `scripts/quality/thresholds.json` |
+| **1 — bloquant** | tests du stack, `tsc --noEmit`, `php -l`, syntaxe Python (`ast.parse`) | **zéro** — du code qui ne compile pas ou dont les tests échouent ne passe jamais |
+| **2 — scoré** | pylint / phpstan **niveau 8** + php-cs-fixer / eslint | note sur 10, seuil dans `scripts/quality/thresholds.json` |
 
 Formule du Niveau 2 (celle de pylint, appliquée à tous les stacks) :
 `score = 10 × (1 − points / N)`, `N` = **lignes ajoutées** par le diff sur les fichiers
@@ -125,6 +125,31 @@ Skill `/pr-check` : orchestre porte → message de commit → commit de l'index 
 d'audit (`/code-review`, `/security-review`). Il ne pousse pas, n'ouvre pas de PR, n'indexe rien
 tout seul et ne corrige jamais le code pour faire passer un contrôle.
 
+### GrumPHP : le PHP a sa propre chaîne
+
+`apps/api/grumphp.yml` déclare 4 tâches — `phpstan` (niveau 8), `phpcsfixer`, `jsonlint`
+(`detect_key_conflicts`), `yamllint`. Le correcteur interactif est **désactivé**
+(`fixer.enabled: false`) : une invite dans un hook n'a pas de sens, et un outil qui réécrit le code
+pour faire passer son propre contrôle est l'inverse d'une porte déterministe.
+
+**Le niveau phpstan doit rester identique dans les trois points d'entrée** :
+`apps/api/grumphp.yml` (`level: 8`), `apps/api/phpstan.dist.neon` (`level: 8`) et
+`scripts/quality/thresholds.json` (`phpstan_level: 8`). Sinon `make lint-php` et GrumPHP annoncent
+des volumes d'erreurs différents sur le même code.
+
+**Piège de hooks résolu** : GrumPHP installe son propre `.git/hooks/pre-commit`, que
+`core.hooksPath=scripts/hooks` (posé par `make hooks`) rendrait muet. `scripts/hooks/pre-commit`
+**délègue donc à GrumPHP** dès qu'un `.php` est indexé (même protocole : diff sur stdin,
+`GRUMPHP_GIT_WORKING_DIR` = racine, `cd apps/api`), et `scripts/hooks/commit-msg` fait de même pour
+la phase commit-msg. Ne jamais remettre un `php -l` direct à la place : ce serait revenir en arrière
+et court-circuiter phpstan/jsonlint/yamllint. Coût mesuré : **1,4 s** quand du PHP change,
+0,01 s sinon. GrumPHP tourne aussi depuis `apps/api` en direct :
+`vendor/bin/grumphp run --no-interaction`.
+
+Attention : les conteneurs qui montent `apps/api` écrivent en **root** dans le volume
+(`grumphp.yml` a été créé root:root). Si un fichier de config devient non modifiable, le supprimer
+puis le réécrire suffit — le dossier parent appartient à l'utilisateur.
+
 Deux contraintes d'environnement à connaître :
 - **`pip` est cassé en local** (`No module named pip`) → pylint vit dans le stage `quality` du
   Dockerfile omr-service (`make lint-py`). Sa config est dans `apps/omr-service/.pylintrc`,
@@ -135,7 +160,8 @@ Deux contraintes d'environnement à connaître :
   écrirait un `.pyc`.
 
 Lacune assumée : **`apps/api` n'a aucun test** (pas de PHPUnit, pas de `tests/`). Son Niveau 1 se
-limite à `php -l`, et le rapport le dit explicitement au lieu d'afficher un vert trompeur.
+limite à `php -l` dans `gate.py`, et le rapport le dit explicitement au lieu d'afficher un vert
+trompeur. Au commit, GrumPHP ajoute l'analyse statique mais toujours aucun test de comportement.
 
 ## Commandes
 

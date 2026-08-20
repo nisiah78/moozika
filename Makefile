@@ -38,9 +38,11 @@ lint-py:
 	docker compose run --rm -T -w /app omr-lint pylint --rcfile=/app/.pylintrc app tests
 	docker compose run --rm -T -w /audiveris omr-lint pylint --rcfile=/app/.pylintrc app tests
 
+# GrumPHP couvre les 4 tâches (phpstan niveau 8, phpcsfixer, jsonlint, yamllint).
+# gate.py appelle phpstan/php-cs-fixer en direct de son côté : il a besoin de leur
+# sortie JSON par outil pour calculer le score, que la sortie agrégée ne donne pas.
 lint-php:
-	cd apps/api && vendor/bin/phpstan analyse -c phpstan.dist.neon --no-progress
-	cd apps/api && vendor/bin/php-cs-fixer check --config=.php-cs-fixer.dist.php --show-progress=none
+	cd apps/api && vendor/bin/grumphp run --no-interaction
 
 lint-front:
 	cd apps/frontend && npm run lint
@@ -61,3 +63,4 @@ gate-report:
 hooks:
 	git config core.hooksPath scripts/hooks
 	@echo "core.hooksPath = scripts/hooks"
+	@echo "GrumPHP reste actif : scripts/hooks/pre-commit lui delegue le PHP."

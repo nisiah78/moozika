@@ -6,8 +6,8 @@
  */
 
 $finder = (new PhpCsFixer\Finder())
-    ->in(__DIR__ . '/src')
-    ->in(__DIR__ . '/config')
+    ->in(__DIR__.'/src')
+    ->in(__DIR__.'/config')
     ->append([__FILE__]);
 
 return (new PhpCsFixer\Config())
@@ -17,4 +17,4 @@ return (new PhpCsFixer\Config())
         'declare_strict_types' => false,
     ])
     ->setFinder($finder)
-    ->setCacheFile(__DIR__ . '/var/.php-cs-fixer.cache');
+    ->setCacheFile(__DIR__.'/var/.php-cs-fixer.cache');

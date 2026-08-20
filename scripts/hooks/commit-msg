@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# Délégation à GrumPHP pour la phase commit-msg.
+#
+# GrumPHP installe son propre .git/hooks/commit-msg ; `core.hooksPath=scripts/hooks`
+# le rendrait muet. Ce fichier reproduit son protocole à l'identique afin que les
+# tâches liées au message de commit (git_commit_message & co., si un jour
+# configurées dans apps/api/grumphp.yml) continuent de tourner.
+#
+# Aucune tâche de ce type n'est configurée aujourd'hui : le hook passe donc en
+# quelques dizaines de millisecondes.
+
+set -uo pipefail
+
+[ -x apps/api/vendor/bin/grumphp ] || exit 0
+
+GIT_USER=$(git config user.name)
+GIT_EMAIL=$(git config user.email)
+COMMIT_MSG_FILE=$1
+
+DIFF=$(git -c diff.mnemonicprefix=false -c diff.noprefix=false --no-pager \
+       diff --raw -r -p -m -M --full-index --no-color --staged | cat)
+
+GRUMPHP_GIT_WORKING_DIR="$(git rev-parse --show-toplevel)"
+export GRUMPHP_GIT_WORKING_DIR
+
+(cd apps/api && printf "%s\n" "${DIFF}" \
+  | vendor/bin/grumphp git:commit-msg \
+      "--git-user=${GIT_USER}" "--git-email=${GIT_EMAIL}" "${COMMIT_MSG_FILE}")

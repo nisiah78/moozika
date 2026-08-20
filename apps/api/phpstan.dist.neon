@@ -1,9 +1,10 @@
 # Analyse statique — Niveau 2 de la porte pré-commit (`make lint-php`).
-# Niveau 5 = valeur de MESURE choisie pour la Phase 0 ; le niveau définitif se
-# décide sur les chiffres réels (cf. docs du gate). L'extension Symfony est
-# chargée automatiquement par phpstan/extension-installer.
+# Niveau 8 : aligné sur apps/api/grumphp.yml et sur `phpstan_level` de
+# scripts/quality/thresholds.json — les trois points d'entrée (grumphp, gate.py,
+# make lint-php) doivent annoncer le même niveau, sinon ils se contredisent.
+# L'extension Symfony est chargée par phpstan/extension-installer.
 parameters:
-    level: 5
+    level: 8
     paths:
         - src
     # Le container n'existe que si le cache dev a été généré (bin/console cache:warmup).

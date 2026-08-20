@@ -1,0 +1,53 @@
+# GrumPHP — porte qualité PHP du monorepo.
+#
+# CONTEXTE MONOREPO : le hook installé à la racine (.git/hooks/pre-commit) fait
+# `cd apps/api/` avant d'appeler grumphp et exporte GRUMPHP_GIT_WORKING_DIR =
+# racine du monorepo. Les tâches reçoivent donc des chemins relatifs à la RACINE,
+# pas à apps/api/ — d'où les ignore_patterns, qui écartent les dépendances et les
+# artefacts des autres stacks.
+#
+# phpstan est aussi appelé par scripts/quality/gate.py et `make lint-php` : le
+# niveau doit rester aligné entre les trois points d'entrée (8 partout).
+# Conventions générales : section « Qualité & commit » de CLAUDE.md.
+grumphp:
+    process_timeout: 300
+
+    # Pas de correction interactive : dans un hook, l'invite « I can fix some
+    # stuff automatically? » n'a pas de sens (stdin porte le diff) et un outil qui
+    # réécrit le code pour faire passer son propre contrôle est l'inverse d'une
+    # porte déterministe. Correction volontaire :
+    #   cd apps/api && vendor/bin/php-cs-fixer fix
+    fixer:
+        enabled: false
+
+    tasks:
+        # Analyse statique — niveau 8 (le 9 exige en plus le typage des `mixed`).
+        phpstan:
+            configuration: phpstan.dist.neon
+            level: 8
+            memory_limit: "512M"
+
+        # Style — @Symfony + @PSR12, aligné sur apps/api/.editorconfig.
+        phpcsfixer:
+            config: .php-cs-fixer.dist.php
+            config_contains_finder: true
+            diff: true
+
+        # Syntaxe JSON. detect_key_conflicts : une clé dupliquée passe
+        # silencieusement en JSON et écrase la première — bug muet.
+        jsonlint:
+            detect_key_conflicts: true
+            ignore_patterns:
+                - '#(^|/)vendor/#'
+                - '#(^|/)node_modules/#'
+                - '#(^|/)var/#'
+                - '#(^|/)\.next/#'
+                - '#composer\.lock$#'
+                - '#package-lock\.json$#'
+
+        # Syntaxe YAML (compose.yml, config/*.yaml, grumphp.yml lui-même).
+        yamllint:
+            ignore_patterns:
+                - '#(^|/)vendor/#'
+                - '#(^|/)node_modules/#'
+                - '#(^|/)var/#'
