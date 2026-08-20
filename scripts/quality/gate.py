@@ -16,6 +16,7 @@ Utilisable seul, hors Claude Code :
 
     python3 scripts/quality/gate.py                 # porte complète
     python3 scripts/quality/gate.py --report-only   # mesure, retourne toujours 0
+    python3 scripts/quality/gate.py --tier1-only    # Niveau 1 seul (mode hook)
     python3 scripts/quality/gate.py --stack frontend --stack omr
     python3 scripts/quality/gate.py --json          # rapport JSON sur stdout
     python3 scripts/quality/gate.py --all-files     # ignore l'index, prend tout
@@ -424,6 +425,8 @@ def main() -> int:
                     help="analyse tout le worktree modifié au lieu de l'index")
     ap.add_argument("--stack", action="append", default=[],
                     help="forcer un stack (répétable)")
+    ap.add_argument("--tier1-only", action="store_true",
+                    help="Niveau 1 seulement (tests, compilation) — utilisé par le hook")
     ap.add_argument("--json", action="store_true", help="rapport JSON sur stdout")
     ap.add_argument("--threshold", type=float, default=None,
                     help="seuil de score Niveau 2 (surcharge thresholds.json)")
@@ -441,6 +444,7 @@ def main() -> int:
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "mode": "all-files" if args.all_files else "staged",
         "report_only": args.report_only or threshold is None,
+        "tier1_only": args.tier1_only,
         "score_threshold": threshold,
         "phpstan_level": phpstan_level,
         "files": files,
@@ -512,6 +516,12 @@ def main() -> int:
             continue
 
         # --- Niveau 2 : scoré ---
+        if args.tier1_only:
+            # Mode hook : le score coûte cher (pylint ~23 s via Docker) et n'a pas
+            # sa place dans un pre-commit. Il reste dans `make gate` / /pr-check.
+            entry["tier2_note"] = "Niveau 2 non lancé (--tier1-only)"
+            report["stacks"][name] = entry
+            continue
         total_points = 0.0
         native_score = None
         measurable = False
@@ -586,7 +596,10 @@ ICON = {"ok": "✓", "fail": "✗", "findings": "!", "unavailable": "·",
 
 
 def print_summary(report: dict) -> None:
-    mode = "MESURE (ne bloque pas)" if report["report_only"] else "PORTE"
+    if report.get("tier1_only"):
+        mode = "NIVEAU 1 seulement (hook)"
+    else:
+        mode = "MESURE (ne bloque pas)" if report["report_only"] else "PORTE"
     print(f"\n── Porte de qualité — {mode} — périmètre : {report['mode']} "
           f"({len(report['files'])} fichiers) ──")
 

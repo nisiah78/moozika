@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 #
 # Filet de sécurité pour les commits faits À LA MAIN (hors Claude Code).
-# Budget : < 5 s. Il ne lance NI tests NI lint Python/TS — un hook lent se
-# contourne au `--no-verify`, ce qui le rend inutile. La porte complète (tests +
-# score) est le travail de `make gate` / du skill /pr-check.
 #
-# EXCEPTION PHP : ce hook DÉLÈGUE à GrumPHP (apps/api/grumphp.yml) dès qu'un .php
-# est indexé. Raison : GrumPHP installe son propre .git/hooks/pre-commit, que
-# `core.hooksPath=scripts/hooks` rendrait muet — le déléguer ici évite de
-# désactiver silencieusement phpstan/phpcsfixer/jsonlint/yamllint.
-# Coût mesuré : ~2,6 s (phpstan niveau 8) quand du PHP change, 0,03 s sinon.
+# Il lance le NIVEAU 1 (tests + compilation) des SEULS stacks touchés, pour que
+# les trois stacks soient gardés à égalité. Avant, seul PHP l'était : GrumPHP
+# s'installe tout seul via son plugin Composer, alors que Python et TS n'avaient
+# qu'un contrôle de syntaxe (et Next.js rien du tout).
+#
+# Le NIVEAU 2 (pylint, eslint, score) reste HORS du hook : pylint prend ~23 s via
+# Docker, et un hook lent se contourne au `--no-verify`, donc devient inutile.
+# Il vit dans `make gate` / le skill /pr-check.
+#
+# Coûts mesurés, uniquement si le stack est touché :
+#   *.py  → syntaxe + unittest        omr 4,4 s · audiveris 0,04 s
+#   *.ts  → tsc --noEmit + tests tsx  5,5 s
+#   *.php → GrumPHP (phpstan niv. 8)  1,4 s
+#   pire cas, les trois ensemble      ~11 s
+#
+# PHP passe par GrumPHP et non par gate.py : GrumPHP installe son propre
+# .git/hooks/pre-commit, que `core.hooksPath=scripts/hooks` rendrait muet — le
+# déléguer ici évite de désactiver silencieusement phpstan/jsonlint/yamllint.
 #
 # Activation (une fois par clone) :   make hooks
 # Contournement volontaire :          git commit --no-verify
@@ -50,7 +60,15 @@ if [ -n "$py" ]; then
     fi
 fi
 
-# --- 4. PHP : délégation à GrumPHP ----------------------------------------- #
+# --- 4. Niveau 1 des stacks touchés (tests + compilation) ------------------ #
+# Délégué à gate.py plutôt que réimplémenté ici : le routage chemin → stack ne
+# doit exister qu'à UN endroit. --tier1-only écarte le score (pylint/eslint).
+if ! python3 scripts/quality/gate.py --tier1-only; then
+    printf "${RED}✗ Niveau 1${NC} — voir le détail ci-dessus (rapport : .git/pr-gate-report.json)\n"
+    fail=1
+fi
+
+# --- 5. PHP : délégation à GrumPHP ----------------------------------------- #
 php=$(staged | grep -E '\.php$' || true)
 if [ -n "$php" ]; then
     if [ -x apps/api/vendor/bin/grumphp ]; then
@@ -79,14 +97,14 @@ if [ -n "$php" ]; then
     fi
 fi
 
-# --- 5. Rappel : le hook ne remplace pas la porte -------------------------- #
+# --- 6. Rappel : le hook ne remplace pas la porte -------------------------- #
 if [ "$fail" -eq 0 ]; then
     if [ -n "$php" ]; then
-        scope="syntaxe + GrumPHP (PHP)"
+        scope="Niveau 1 + GrumPHP"
     else
-        scope="syntaxe seule"
+        scope="Niveau 1"
     fi
-    printf "${YEL}·${NC} hook OK (%s). Tests et score : ${YEL}make gate${NC} ou /pr-check\n" "$scope"
+    printf "${YEL}·${NC} hook OK (%s). Score (pylint/eslint) : ${YEL}make gate${NC} ou /pr-check\n" "$scope"
 fi
 
 exit "$fail"

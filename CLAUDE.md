@@ -115,11 +115,31 @@ Règles pylint désactivées par décision (cf. `apps/omr-service/.pylintrc`) :
 docstrings de fonctions/classes internes. La famille « complexité » (`too-many-*`) reste **active**.
 
 ```bash
-make gate           # porte sur ce qui est INDEXÉ (git add) — c'est ce qui bloque
+make gate           # porte complète (Niveau 1 + score) sur ce qui est INDEXÉ
 make gate-report    # mesure tout le worktree modifié, ne bloque jamais
-make lint           # les 3 chaînes qualité (py via Docker, php, front)
-make hooks          # active le hook pre-commit versionné (une fois par clone)
+make lint           # les 3 chaînes qualité (py via Docker, php via GrumPHP, front)
+make hooks          # active le hook versionné (une fois par clone) — DÉJÀ FAIT ici
 ```
+
+### Ce que le hook lance vraiment
+
+`scripts/hooks/pre-commit` lance le **Niveau 1 des seuls stacks touchés**, en déléguant le routage
+à `gate.py --tier1-only` (la table chemin → stack n'existe qu'à un endroit). Coûts mesurés :
+
+| Fichier indexé | Ce qui tourne | Coût |
+| --- | --- | --- |
+| `*.py` | syntaxe `ast.parse` + suite `unittest` du stack | omr 4,4 s · audiveris 0,04 s |
+| `*.ts` / `*.tsx` | `tsc --noEmit` + tests tsx | 5,5 s |
+| `*.php` | GrumPHP (phpstan 8, phpcsfixer, jsonlint, yamllint) | 1,4 s |
+| les trois ensemble | — | ~8,6 s |
+
+Le **Niveau 2 reste hors du hook** : pylint prend ~23 s via Docker, et un hook lent se contourne au
+`--no-verify`, donc devient inutile. Il vit dans `make gate` / `/pr-check`.
+
+Historique de la décision : au départ le hook ne faisait que de la syntaxe, si bien que **seul PHP
+était réellement gardé** (GrumPHP s'installe tout seul via son plugin Composer) tandis que Python
+n'avait qu'un contrôle de syntaxe et Next.js **rien du tout**. La parité par stack corrige ça.
+Ne pas revenir à un hook « syntaxe seule » sans mesurer : le déséquilibre n'était pas voulu.
 
 Skill `/pr-check` : orchestre porte → message de commit → commit de l'index → proposition
 d'audit (`/code-review`, `/security-review`). Il ne pousse pas, n'ouvre pas de PR, n'indexe rien
