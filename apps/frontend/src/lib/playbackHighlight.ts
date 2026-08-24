@@ -18,8 +18,22 @@ import type { PlaybackPosition } from "./playback";
 
 const SOLFA_CLASS = "solfa-beat-group--playing";
 
+/**
+ * Nœuds ciblés par le surlignage courant. Renvoyés à l'appelant pour que le
+ * défilement automatique (playbackScroll) réutilise ce ciblage au lieu de
+ * refaire le même querySelectorAll et le même test de plage.
+ */
+export interface HighlightTargets {
+  /** `.solfa-beat-group` surlignés — un par voix du système joué. */
+  solfa: HTMLElement[];
+  /** `.staff-measure-cell` de la mesure jouée — une par portée. */
+  staff: HTMLElement[];
+}
+
 let shownSolfa: HTMLElement[] = [];
 let shownStaff: HTMLElement[] = [];
+/** Les CELLULES de mesure : c'est elles qui portent la géométrie, pas la bande. */
+let shownStaffCells: HTMLElement[] = [];
 
 /** Retire tout surlignage actuellement affiché. */
 function clear(): void {
@@ -27,16 +41,17 @@ function clear(): void {
   shownSolfa = [];
   for (const band of shownStaff) band.style.display = "none";
   shownStaff = [];
+  shownStaffCells = [];
 }
 
 /**
  * Surligne le temps `pos` (ou efface si null). Sûr même si le DOM a changé
  * entre deux appels (nœuds détachés → remove sans effet, on re-cible).
  */
-export function applyBeatHighlight(pos: PlaybackPosition | null): void {
-  if (typeof document === "undefined") return;
+export function applyBeatHighlight(pos: PlaybackPosition | null): HighlightTargets {
+  if (typeof document === "undefined") return { solfa: [], staff: [] };
   clear();
-  if (!pos) return;
+  if (!pos) return { solfa: [], staff: [] };
 
   // ── Sol-fa : cellule(s) de temps de toutes les voix à cette mesure ──────────
   document
@@ -62,5 +77,8 @@ export function applyBeatHighlight(pos: PlaybackPosition | null): void {
       band.style.width = `${(1 / pulses) * 100}%`;
       band.style.display = "block";
       shownStaff.push(band);
+      shownStaffCells.push(cell);
     });
+
+  return { solfa: shownSolfa, staff: shownStaffCells };
 }

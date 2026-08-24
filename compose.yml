@@ -1,6 +1,34 @@
 # Orchestration de développement.
 # Voir docs/architecture.md §13-14.
 
+# Environnement partage par `api` et `api-worker` : un ancrage plutot qu'une copie,
+# car une divergence entre le service HTTP et le worker (DATABASE_URL, MinIO, OMR)
+# produirait des bugs invisibles cote worker uniquement.
+x-api-env: &api-env
+  APP_ENV: dev
+  APP_SECRET: change_me_moozika_dev_secret_32chars
+  DATABASE_URL: postgresql://moozika:moozika@postgres:5432/moozika?serverVersion=16&charset=utf8
+  POSTGRES_HOST: postgres
+  POSTGRES_USER: moozika
+  POSTGRES_PASSWORD: moozika
+  POSTGRES_DB: moozika
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: moozika
+  MINIO_SECRET_KEY: moozika_secret
+  MINIO_BUCKET: moozika-scores
+  MINIO_REGION: us-east-1
+  OMR_SERVICE_URL: http://omr-service:8000
+  # apps/api/.env est gitignore : sans cette ligne la variable n'existerait pas sur
+  # un clone neuf et le transport Messenger serait introuvable. auto_setup=0 : la
+  # table est creee explicitement par l'entrypoint (messenger:setup-transports).
+  MESSENGER_TRANSPORT_DSN: 'doctrine://default?auto_setup=0'
+  # Publication : nom de service interne. Abonnement : URL vue par le NAVIGATEUR.
+  # Les deux diffèrent forcément, le navigateur ne résout pas « mercure ».
+  MERCURE_URL: 'http://mercure/.well-known/mercure'
+  MERCURE_PUBLIC_URL: 'http://localhost:3001/.well-known/mercure'
+  MERCURE_JWT_SECRET: 'cz7ByaYuSb0ktnVCdZPaHfI/ushqmHNQ+Wbce/Alwu0='
+  CORS_ALLOW_ORIGIN: '^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$'
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -77,21 +105,7 @@ services:
       context: ./apps/api
     ports:
       - "8080:8080"
-    environment:
-      APP_ENV: dev
-      APP_SECRET: change_me_moozika_dev_secret_32chars
-      DATABASE_URL: postgresql://moozika:moozika@postgres:5432/moozika?serverVersion=16&charset=utf8
-      POSTGRES_HOST: postgres
-      POSTGRES_USER: moozika
-      POSTGRES_PASSWORD: moozika
-      POSTGRES_DB: moozika
-      MINIO_ENDPOINT: http://minio:9000
-      MINIO_ACCESS_KEY: moozika
-      MINIO_SECRET_KEY: moozika_secret
-      MINIO_BUCKET: moozika-scores
-      MINIO_REGION: us-east-1
-      OMR_SERVICE_URL: http://omr-service:8000
-      CORS_ALLOW_ORIGIN: '^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$'
+    environment: *api-env
     volumes:
       - ./apps/api:/var/www/api
       - api_vendor:/var/www/api/vendor
@@ -105,6 +119,75 @@ services:
       omr-service:
         condition: service_started
 
+  # Hub Mercure : pousse l'avancement des transcriptions vers le navigateur.
+  # Le navigateur s'abonne au hub directement (GET SSE) — c'est le motif officiel
+  # Symfony, et le hub n'est pas Python : la règle d'or (le navigateur ne parle jamais
+  # à omr-service) reste respectée.
+  mercure:
+    image: dunglas/mercure
+    restart: unless-stopped
+    ports:
+      - "3001:80"
+    environment:
+      # HTTPS désactivé en dev : sans ça Caddy tente Let's Encrypt sur un nom local.
+      SERVER_NAME: ':80'
+      MERCURE_PUBLISHER_JWT_KEY: 'cz7ByaYuSb0ktnVCdZPaHfI/ushqmHNQ+Wbce/Alwu0='
+      MERCURE_SUBSCRIBER_JWT_KEY: 'cz7ByaYuSb0ktnVCdZPaHfI/ushqmHNQ+Wbce/Alwu0='
+      # `anonymous` : il n'y a AUCUNE auth utilisateur en v1 (security.yaml est en
+      # PUBLIC_ACCESS), donc le navigateur n'a pas de JWT à présenter. La protection
+      # d'un job repose alors uniquement sur l'UUID indevinable de son topic — à
+      # reprendre avec l'entité User (cf. architecture.md §11).
+      MERCURE_EXTRA_DIRECTIVES: |
+        cors_origins http://localhost:3000 http://127.0.0.1:3000
+        anonymous
+    command: /usr/bin/caddy run --config /etc/caddy/dev.Caddyfile
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - mercure_data:/data
+      - mercure_config:/config
+
+  # Worker Messenger : process SEPARE, non negociable. `api` tourne sur le serveur
+  # integre PHP (`php -S`, mono-worker) : une transcription de 30 min executee dans le
+  # process HTTP gelerait l'API entiere.
+  api-worker:
+    build:
+      context: ./apps/api
+    environment:
+      <<: *api-env
+      # L'entrypoint est partage avec `api`, qui gere deja le schema.
+      SKIP_SCHEMA_UPDATE: "1"
+    volumes:
+      - ./apps/api:/var/www/api
+      - api_vendor:/var/www/api/vendor
+    # Un seul consommateur : la capacite reelle d'Audiveris est de 1 transcription a la
+    # fois (uvicorn mono-process, subprocess bloquant, pages en sequence).
+    command:
+      - php
+      - bin/console
+      - messenger:consume
+      - transcribe
+      - -vv
+      - --time-limit=3600
+      - --memory-limit=512M
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      omr-service:
+        condition: service_started
+      api:
+        condition: service_started
+      mercure:
+        condition: service_started
+
   frontend:
     build:
       context: ./apps/frontend
@@ -113,6 +196,8 @@ services:
     environment:
       - OMR_SERVICE_URL=http://omr-service:8000
       - NEXT_PUBLIC_API_URL=http://localhost:8080
+      # URL du hub vue par le NAVIGATEUR (pas le nom de service interne).
+      - NEXT_PUBLIC_MERCURE_URL=http://localhost:3001/.well-known/mercure
       - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
     volumes:
@@ -147,3 +232,5 @@ volumes:
   postgres_data:
   minio_data:
   api_vendor:
+  mercure_data:
+  mercure_config:

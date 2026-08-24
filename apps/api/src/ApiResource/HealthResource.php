@@ -18,7 +18,6 @@ use ApiPlatform\Metadata\Get;
             uriTemplate: '/health',
             name: 'health',
             provider: \App\State\HealthProvider::class,
-            read: false,
             deserialize: false,
         ),
     ],

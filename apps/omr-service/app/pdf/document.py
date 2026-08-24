@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Union
 
+from ..cancel import CancelFn, check
 from ..progress import ProgressFn, emit, progress
 from ..solfa import ScoreModel, parse_solfa, to_musicxml_multi, to_solfa
 from ..solfa.model import Measure, NoteEl
@@ -49,7 +50,8 @@ def _read(source: Union[str, bytes]) -> bytes:
 
 
 def _runs_from_source(
-    source: Union[str, bytes], *, on_progress: ProgressFn = None
+    source: Union[str, bytes], *, on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ):
     """Texte embarqué (ToUnicode) si possible, sinon OCR (PDF/image scanné)."""
     data = _read(source)
@@ -66,10 +68,10 @@ def _runs_from_source(
         if paddle_available is not None and paddle_available():
             # Laisse remonter une erreur paddle explicite (l'utilisateur a
             # installé paddle pour s'en servir : on ne la masque pas).
-            return paddle_to_runs(data, on_progress=on_progress)
+            return paddle_to_runs(data, on_progress=on_progress, is_cancelled=is_cancelled)
         try:
             # OCR → correcteur glyphe/rythme avant layout.
-            return correct_ocr_runs(ocr_to_runs(data, on_progress=on_progress))
+            return correct_ocr_runs(ocr_to_runs(data, on_progress=on_progress, is_cancelled=is_cancelled))
         except OcrError as ocr_exc:
             raise PdfSolfaError(
                 f"{extract_exc} ; fallback OCR : {ocr_exc}"
@@ -77,7 +79,8 @@ def _runs_from_source(
 
 
 def pdf_to_document(
-    source: Union[str, bytes], *, on_progress: ProgressFn = None
+    source: Union[str, bytes], *, on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> SolfaDocument:
     """Extrait la structure sol-fa (en-tête + voix en notation canonique)."""
     try:
@@ -89,7 +92,8 @@ def pdf_to_document(
         pass
 
     try:
-        runs = _runs_from_source(source, on_progress=on_progress)
+        check(is_cancelled)
+        runs = _runs_from_source(source, on_progress=on_progress, is_cancelled=is_cancelled)
         progress(on_progress, phase="layout", pct=70, message="Reconstruction des voix…")
         return build_document(runs)
     except PdfSolfaError:
@@ -171,6 +175,7 @@ def pdf_to_models(
     source: Union[str, bytes], *, tonic_override: str | None = None,
     doc: SolfaDocument | None = None, scanned: bool | None = None,
     on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> List[ScoreModel]:
     """Une voix -> un ScoreModel (longueurs alignées).
 
@@ -186,7 +191,7 @@ def pdf_to_models(
     l'OCR** (coûteux — PaddleOCR) ; sinon calculés ici.
     """
     if doc is None:
-        doc = pdf_to_document(source, on_progress=on_progress)
+        doc = pdf_to_document(source, on_progress=on_progress, is_cancelled=is_cancelled)
     if scanned is None:
         scanned = _source_is_scanned(source)
     tonic = tonic_override or doc.header.tonic
@@ -199,6 +204,7 @@ def pdf_to_models(
     ]
     total = len(pairs) or 1
     for idx, (name, notation) in enumerate(pairs):
+        check(is_cancelled)
         try:
             model = parse_solfa(
                 notation,
@@ -254,9 +260,11 @@ def pdf_to_models(
 def _solfa_pdf_to_score(
     source: Union[str, bytes], *, tonic_override: str | None = None,
     on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> dict:
     """Pipeline B : PDF sol-fa tonique malgache typographié ou OCR."""
-    doc = pdf_to_document(source, on_progress=on_progress)  # OCR UNE SEULE FOIS
+    doc = pdf_to_document(source, on_progress=on_progress, is_cancelled=is_cancelled)  # OCR UNE SEULE FOIS
+    check(is_cancelled)
     scanned = _source_is_scanned(source)        # bon marché (extract_runs échoue vite)
     models = pdf_to_models(
         source,
@@ -314,6 +322,7 @@ def pdf_to_score(
     source: Union[str, bytes], *, filename: str | None = None,
     tonic_override: str | None = None,
     on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> dict:
     """Import PDF unifié : sol-fa malgache (pipeline B) ou portée (Audiveris → sol-fa).
 
@@ -331,6 +340,7 @@ def pdf_to_score(
     fname = filename or (Path(source).name if isinstance(source, (str, Path)) else "score.pdf")
 
     if data.startswith(b"%PDF"):
+        check(is_cancelled)
         progress(on_progress, phase="detect", pct=5, message="Analyse du PDF…")
         kind = detect_pdf_kind(data)
         if kind == "scanned" and 0 < _pdf_page_count(data) <= _MAX_SOLFA_SCAN_PAGES:
@@ -339,12 +349,12 @@ def pdf_to_score(
             # sol-fa → l'OCR sol-fa lève PdfSolfaError → repli Audiveris.
             try:
                 return _solfa_pdf_to_score(
-                    source, tonic_override=tonic_override, on_progress=on_progress
+                    source, tonic_override=tonic_override, on_progress=on_progress, is_cancelled=is_cancelled
                 )
             except PdfSolfaError as solfa_exc:
                 try:
                     return staff_pdf_to_score(
-                        data, filename=fname, on_progress=on_progress
+                        data, filename=fname, on_progress=on_progress, is_cancelled=is_cancelled
                     )
                 except StaffRecognizeError as staff_exc:
                     raise PdfSolfaError(
@@ -354,11 +364,11 @@ def pdf_to_score(
             # Portée gravée / PDF inconnu → Audiveris (OMR portée).
             try:
                 return staff_pdf_to_score(
-                    data, filename=fname, on_progress=on_progress
+                    data, filename=fname, on_progress=on_progress, is_cancelled=is_cancelled
                 )
             except StaffRecognizeError as exc:
                 raise PdfSolfaError(str(exc)) from exc
 
     return _solfa_pdf_to_score(
-        source, tonic_override=tonic_override, on_progress=on_progress
+        source, tonic_override=tonic_override, on_progress=on_progress, is_cancelled=is_cancelled
     )

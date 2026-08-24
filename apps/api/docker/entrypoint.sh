@@ -26,8 +26,17 @@ new PDO("pgsql:host=$host;dbname=$db", $user, $pass);
   sleep 1
 done
 
-php bin/console doctrine:database:create --if-not-exists --no-interaction 2>/dev/null || true
-php bin/console doctrine:schema:update --force --no-interaction
+# Le worker Messenger partage cette image et cet entrypoint : il a besoin de l'attente
+# Postgres ci-dessus, mais PAS de gérer le schéma. Deux conteneurs lançant
+# `schema:update --force` en parallèle se marchent dessus.
+if [ "${SKIP_SCHEMA_UPDATE:-0}" = "1" ]; then
+  echo "Schema management skipped (SKIP_SCHEMA_UPDATE=1)"
+else
+  php bin/console doctrine:database:create --if-not-exists --no-interaction 2>/dev/null || true
+  php bin/console doctrine:schema:update --force --no-interaction
+  # MESSENGER_TRANSPORT_DSN porte auto_setup=0 : la table messenger_messages n'est donc
+  # jamais créée à la volée, on la crée ici explicitement (commande idempotente).
+  php bin/console messenger:setup-transports --no-interaction
+fi
 
-echo "API ready on :8080"
 exec "$@"

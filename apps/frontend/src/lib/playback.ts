@@ -307,6 +307,8 @@ export class PianoPlayer {
   private part: { dispose: () => void } | null = null;
   /** Callback de surlignage : temps en cours (ou null quand la lecture cesse). */
   private onBeat: ((pos: PlaybackPosition | null) => void) | null = null;
+  /** Avancement 0..1 poussé par la même boucle rAF que le surlignage. */
+  private onProgress: ((ratio: number) => void) | null = null;
   /** Boucle d'animation du surlignage (requestAnimationFrame). */
   private raf: number | null = null;
 
@@ -329,11 +331,19 @@ export class PianoPlayer {
     enabledVoices?: ReadonlySet<string>,
     tempoSettings?: TempoSettings,
     onBeat?: (pos: PlaybackPosition | null) => void,
+    /**
+     * Avancement 0..1, appelé depuis la MÊME boucle rAF que `onBeat`.
+     * L'appelant DOIT l'écrire dans le DOM par une ref, jamais via setState :
+     * un rendu React par pulsation sature le thread principal et désynchronise
+     * l'ordonnanceur de Tone (cf. l'en-tête de playbackHighlight.ts).
+     */
+    onProgress?: (ratio: number) => void,
   ): Promise<void> {
     await this.ensureReady();
     const Tone = this.tone!;
     this.stop();
     this.onBeat = onBeat ?? null;
+    this.onProgress = onProgress ?? null;
 
     const events = scoreToEvents(result, enabledVoices, tempoSettings);
     if (events.length === 0) {
@@ -368,24 +378,50 @@ export class PianoPlayer {
     // des temps. On n'ajoute AUCUN événement à l'ordonnanceur (sinon des
     // centaines de callbacks Transport+Draw le saturent → notes en retard/coupées
     // et surlignage désynchronisé de l'audio). Ici le vert suit exactement le son.
-    if (onBeat && typeof requestAnimationFrame !== "undefined") {
-      const beats = beatTimeline(result, enabledVoices, tempoSettings);
-      if (beats.length > 0) {
-        const Transport = Tone.Transport;
-        let bi = -1;
-        const tick = () => {
-          const pos = Transport.seconds;
+    // L'avancement passe par CETTE boucle et pas par une seconde : deux rAF
+    // concurrentes se disputeraient le thread que l'audio doit garder libre.
+    if ((onBeat || onProgress) && typeof requestAnimationFrame !== "undefined") {
+      const beats = onBeat ? beatTimeline(result, enabledVoices, tempoSettings) : [];
+      const Transport = Tone.Transport;
+      let bi = -1;
+      let lastRatio = -1;
+      const tick = () => {
+        const pos = Transport.seconds;
+
+        if (beats.length > 0) {
           let ni = bi;
           while (ni + 1 < beats.length && beats[ni + 1].time <= pos) ni++;
           if (ni >= 0 && ni !== bi) {
             bi = ni;
             this.onBeat?.({ measure: beats[bi].measure, beat: beats[bi].beat });
           }
-          this.raf = requestAnimationFrame(tick);
-        };
+        }
+
+        if (this.onProgress) {
+          // Arrondi au millième : à 60 fps sur une pièce de 3 min, écrire le
+          // DOM à chaque frame pour un déplacement sub-pixel est du gaspillage.
+          const ratio = Math.round(Math.min(1, Math.max(0, pos / end)) * 1000) / 1000;
+          if (ratio !== lastRatio) {
+            lastRatio = ratio;
+            this.onProgress(ratio);
+          }
+        }
+
         this.raf = requestAnimationFrame(tick);
-      }
+      };
+      this.raf = requestAnimationFrame(tick);
     }
+  }
+
+  /** Joue une note isolée (clavier du dock). `name` = notation Tone, ex. "C4". */
+  async note(name: string, duration = 0.9): Promise<void> {
+    await this.ensureReady();
+    this.sampler?.triggerAttackRelease(name, duration);
+  }
+
+  /** Le sampler est-il prêt ? Le clavier reste inerte tant qu'il ne l'est pas. */
+  isLoaded(): boolean {
+    return this.loaded;
   }
 
   stop(): void {
@@ -412,6 +448,8 @@ export class PianoPlayer {
     // changement de partition, dispose).
     this.onBeat?.(null);
     this.onBeat = null;
+    this.onProgress?.(0);
+    this.onProgress = null;
   }
 
   dispose(): void {

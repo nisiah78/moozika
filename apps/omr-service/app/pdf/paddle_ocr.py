@@ -33,6 +33,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("FLAGS_use_omp", "0")
 
 from .extract import Run
+from ..cancel import CancelFn, check
 from ..progress import ProgressFn, progress
 
 _PADDLE: Optional[Any] = None
@@ -192,7 +193,8 @@ def paddle_ocr_page(bgr, *, font: str = "paddle") -> List[Run]:
 
 
 def paddle_to_runs(
-    source, *, dpi: int = 300, on_progress: ProgressFn = None
+    source, *, dpi: int = 300, on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> List[Run]:
     """PDF scanné ou image → runs (texte + positions en points), via PaddleOCR.
 
@@ -218,6 +220,7 @@ def paddle_to_runs(
     y_offset = 0.0     # empilement des pages, en POINTS (après normalisation)
     gap = 40.0         # cohérent avec _SYSTEM_GAP de layout.py
     for page_idx, (bgr, scale) in enumerate(pages):
+        check(is_cancelled)
         pct = 10 + 55 * page_idx / n_pages
         progress(
             on_progress,

@@ -11,7 +11,6 @@ import {
   memo,
 } from "react";
 import { flushSync } from "react-dom";
-import { IBM_Plex_Mono, Source_Serif_4 } from "next/font/google";
 import type { Measure as ModelMeasure, ScoreResult, TripletMark, VoiceModel } from "@/lib/types";
 import { TempoControl } from "@/components/TempoControl";
 import { buildSolfaMarkdown } from "@/lib/solfaMarkdown";
@@ -79,19 +78,6 @@ import {
   tripletRoleAt,
   tripletSpanBeatsAt,
 } from "@/lib/triplets";
-
-const solfaMono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  display: "swap",
-});
-
-const solfaSerif = Source_Serif_4({
-  subsets: ["latin"],
-  weight: ["400", "600", "700"],
-  display: "swap",
-  style: ["normal", "italic"],
-});
 
 const KNOWN_SUBTITLES: Record<string, string> = {
   "hitahy anao anie ny tompo": "The Lord bless you and keep you",
@@ -388,6 +374,7 @@ const SolfaBeatInput = memo(function SolfaBeatInput({
   onBackspacePull,
   onDeletePull,
   onNavigate,
+  readOnly,
 }: {
   cellKey: string;
   committedValue: string;
@@ -407,6 +394,9 @@ const SolfaBeatInput = memo(function SolfaBeatInput({
     value: string,
     caretIndex: number,
   ) => void;
+  /** Lecture seule : le CSS masque les affordances, mais seul `readOnly` +
+      `tabIndex:-1` empêche vraiment d'atteindre le champ au clavier. */
+  readOnly?: boolean;
   onBackspacePull: (voiceName: string, measureAbs: number, beatIndex: number) => void;
   onDeletePull: (
     voiceName: string,
@@ -442,6 +432,8 @@ const SolfaBeatInput = memo(function SolfaBeatInput({
       className={`solfa-note-input${hasError ? " solfa-note-input--error" : ""}${tripletSpan === 2 ? " solfa-note-input--triplet-pair" : ""}${tripletSpan ? " solfa-note-input--triplet" : ""}`}
       value={draft}
       disabled={busy}
+      readOnly={readOnly}
+      tabIndex={readOnly ? -1 : undefined}
       spellCheck={false}
       title={
         hasError
@@ -548,7 +540,7 @@ const SolfaSystemBlock = memo(function SolfaSystemBlock({
   voiceMeasure,
   voiceModel,
   primaryVoiceName,
-  beatSchedule,
+  readOnly,
   onTripletPlusClick,
   onAddVoice,
 }: {
@@ -601,7 +593,7 @@ const SolfaSystemBlock = memo(function SolfaSystemBlock({
   voiceMeasure: (voiceName: string, measureAbs: number) => ModelMeasure | undefined;
   voiceModel: (voiceName: string) => VoiceModel | undefined;
   primaryVoiceName: string;
-  beatSchedule: number[];
+  readOnly?: boolean;
   onTripletPlusClick: (
     voiceName: string,
     measureAbs: number,
@@ -722,7 +714,7 @@ const SolfaSystemBlock = memo(function SolfaSystemBlock({
       </div>
 
       <div className="solfa-music">
-        {system.voices.map((voice, vi) => (
+        {system.voices.map((voice) => (
           <div key={voice.name} className="solfa-voice-row">
             <div className="solfa-label">
               <span className="solfa-abbr">{voiceAbbr(voice.name)}</span>
@@ -777,6 +769,7 @@ const SolfaSystemBlock = memo(function SolfaSystemBlock({
                             )}
                             <span className="solfa-beat-row solfa-beat-row--triplet-pair">
                               <SolfaBeatInput
+                        readOnly={readOnly}
                                 cellKey={key}
                                 committedValue={committedPair}
                                 beatDiv={div}
@@ -822,6 +815,7 @@ const SolfaSystemBlock = memo(function SolfaSystemBlock({
                           )}
                           <span className="solfa-beat-row">
                             <SolfaBeatInput
+                        readOnly={readOnly}
                               cellKey={key}
                               committedValue={committed}
                               beatDiv={div}
@@ -902,6 +896,8 @@ const SolfaSystemBlock = memo(function SolfaSystemBlock({
                   <span key={bi} className="solfa-beat-group">
                     <input
                       className="solfa-lyric-input"
+                      readOnly={readOnly}
+                      tabIndex={readOnly ? -1 : undefined}
                       value={lyrics[`${measureAbs}-${bi}`] ?? ""}
                       onChange={(e) =>
                         onLyricChange(`${measureAbs}-${bi}`, e.target.value)
@@ -974,10 +970,16 @@ type SolfaScoreProps = {
   tempo: TempoSettings;
   onTempoChange: (next: TempoSettings) => void;
   onChange?: (next: ScoreResult) => void;
+  /**
+   * Mode lecture. `.moo-sheet--read` masque déjà les affordances d'édition en
+   * CSS, mais le CSS ne peut pas poser `disabled` : sans ce prop, la touche Tab
+   * atteint encore chaque cellule et chaque champ de paroles.
+   */
+  readOnly?: boolean;
 };
 
 export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
-  function SolfaScore({ result, tempo, onTempoChange, onChange }, ref) {
+  function SolfaScore({ result, tempo, onTempoChange, onChange, readOnly }, ref) {
   const [lyrics, setLyrics] = useState<LyricsState>({});
   const [localGrids, setLocalGrids] = useState<Record<string, string[][]>>({});
   /** Commits simples (1 cellule) sans rebuild de toute la partition. */
@@ -1987,7 +1989,7 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
         setError(null);
         try {
           let grids = collectPendingGrids();
-          let score = mutate(cloneScore(latestResultRef.current));
+          const score = mutate(cloneScore(latestResultRef.current));
           if (patchGrids) {
             grids = patchGrids(grids, score);
           }
@@ -2188,7 +2190,7 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
           setError(null);
           try {
             const grids = collectPendingGrids();
-            let score = cloneScore(latestResultRef.current);
+            const score = cloneScore(latestResultRef.current);
 
             // Intégrer les éditions locales dans la notation avant transposition
             for (let vi = 0; vi < score.voices.length; vi++) {
@@ -2374,20 +2376,20 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
 
   return (
     <article
-      className={`solfa-score ${solfaMono.className}${denseLayout ? " solfa-score--dense-measure" : ""}`}
+      className={`solfa-score${denseLayout ? " solfa-score--dense-measure" : ""}`}
     >
       <header className="solfa-score__header">
         <p className="solfa-score__meta-left">
           Do dia {header.tonic}
           {header.mode === "minor" ? " (mineur)" : ""}, {beats}/{beatType}
         </p>
-        <div className={`solfa-score__titles ${solfaSerif.className}`}>
+        <div className="solfa-score__titles">
           <h2 className="solfa-score__title">{title}</h2>
           {header.composer && (
             <p className="solfa-score__subtitle">{header.composer}</p>
           )}
           {header.work && (
-            <p className="solfa-score__subtitle text-stone-500">{header.work}</p>
+            <p className="solfa-score__subtitle">{header.work}</p>
           )}
           {subtitle && !header.composer && (
             <p className="solfa-score__subtitle">({subtitle})</p>
@@ -2400,7 +2402,7 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
 
       {(busy || error) && (
         <div className="mb-3 px-1 text-xs">
-          {busy && <span className="text-stone-500">Mise à jour…</span>}
+          {busy && <span className="opacity-70">Mise à jour…</span>}
           {error && <span className="text-red-700">{error}</span>}
         </div>
       )}
@@ -2408,6 +2410,7 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
       <div className="solfa-score__body">
         {systems.map((system) => (
           <SolfaSystemBlock
+            readOnly={readOnly}
             key={system.startNumber}
             system={system}
             lyrics={lyrics}
@@ -2432,7 +2435,6 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
             voiceMeasure={voiceMeasure}
             voiceModel={voiceModelFor}
             primaryVoiceName={primaryVoiceName}
-            beatSchedule={beatSchedule}
             onTripletPlusClick={handleTripletPlusClick}
             onAddVoice={handleOpenAddVoice}
           />

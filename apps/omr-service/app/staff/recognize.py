@@ -1,17 +1,22 @@
 """Reconnaissance portée (solfège occidental) via Audiveris → MusicXML → sol-fa."""
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
+import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import List, Tuple, Union
 
 from .consolidate import consolidate_omr_voices
+from ..cancel import CancelFn, Cancelled, check
 from ..progress import ProgressFn, progress
 from ..solfa.from_musicxml import MusicXmlError, read_musicxml
 from ..solfa.model import Measure, NoteEl, ScoreModel
@@ -76,11 +81,20 @@ def _audiveris_available() -> bool:
     return shutil.which(os.environ.get("AUDIVERIS_BIN", "Audiveris")) is not None
 
 
-def _call_audiveris_http(data: bytes, filename: str) -> str:
-    """POST multipart vers audiveris-service → musicxml text."""
+def _call_audiveris_http(data: bytes, filename: str, is_cancelled: CancelFn = None) -> str:
+    """POST multipart vers audiveris-service → musicxml text.
+
+    Utilise ``http.client`` et non ``urllib.request.urlopen`` pour UNE raison :
+    ``urlopen`` bloque jusqu'au retour et ne laisse aucune prise pour interrompre.
+    Or la reconnaissance dure 15-30 min et l'annulation doit atteindre le service
+    Audiveris — sinon la JVM continue de tourner dans le vide. Ici on garde une
+    reference sur la connexion, qu'un veilleur ferme sur annulation : la lecture
+    bloquee leve alors OSError et on remonte ``Cancelled``.
+    """
     url = _audiveris_url()
     if not url:
         raise StaffRecognizeError("AUDIVERIS_URL non configuré")
+
     boundary = "moozika-audiveris-boundary"
     body = (
         f"--{boundary}\r\n"
@@ -88,28 +102,78 @@ def _call_audiveris_http(data: bytes, filename: str) -> str:
         f"Content-Type: application/octet-stream\r\n\r\n"
     ).encode() + data + f"\r\n--{boundary}--\r\n".encode()
 
-    req = urllib.request.Request(
-        f"{url}/recognize",
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        method="POST",
-    )
+    parts = urllib.parse.urlsplit(url)
+    timeout = int(os.environ.get("AUDIVERIS_TIMEOUT", "1800"))
+    cls = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
+    conn = cls(parts.hostname or "localhost", parts.port, timeout=timeout)
+
+    stop = threading.Event()
+
+    def _watch() -> None:
+        # Scrute l'annulation et ferme la connexion : c'est ce qui debloque la lecture
+        # et, cote audiveris-service, provoque la deconnexion client qui tue la JVM.
+        while not stop.wait(0.5):
+            if is_cancelled is not None and is_cancelled():
+                # shutdown() et PAS seulement close() : sous Linux, fermer un descripteur
+                # ne reveille PAS un recv() deja bloque dans un autre thread — seul
+                # shutdown() le fait sortir. Mesure a l'appui : avec close() seul, la
+                # lecture restait bloquee et Audiveris continuait de tourner.
+                sock = getattr(conn, "sock", None)
+                if sock is not None:
+                    try:
+                        sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+                return
+
+    watcher = threading.Thread(target=_watch, daemon=True)
+    watcher.start()
+
+    base_path = parts.path.rstrip("/")
     try:
-        with urllib.request.urlopen(req, timeout=int(os.environ.get("AUDIVERIS_TIMEOUT", "1800"))) as resp:
-            payload = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        try:
-            detail = json.loads(detail).get("detail", detail)
-        except json.JSONDecodeError:
-            pass
-        detail = _clean_jvm_noise(detail) or "reconnaissance échouée"
-        raise StaffRecognizeError(f"Audiveris : {detail}") from exc
+        conn.request(
+            "POST",
+            f"{base_path}/recognize",
+            body=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        resp = conn.getresponse()
+        status = resp.status
+        raw = resp.read().decode(errors="replace")
     except OSError as exc:
+        # Si c'est NOUS qui avons ferme la connexion, ce n'est pas une panne du service.
+        check(is_cancelled)
         raise StaffRecognizeError(
             f"service Audiveris injoignable ({url}) — "
             f"lancer « docker compose up audiveris »"
         ) from exc
+    finally:
+        stop.set()
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    if status >= 400:
+        detail = raw
+        try:
+            detail = json.loads(raw).get("detail", raw)
+        except json.JSONDecodeError:
+            pass
+        # 499 = annulation propagee par audiveris-service : ce n'est pas un echec.
+        if status == 499:
+            raise Cancelled("reconnaissance annulée par le client")
+        detail = _clean_jvm_noise(detail) or "reconnaissance échouée"
+        raise StaffRecognizeError(f"Audiveris : {detail}")
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise StaffRecognizeError("réponse Audiveris illisible (JSON invalide)") from exc
 
     musicxml = payload.get("musicxml")
     if not musicxml:
@@ -158,12 +222,12 @@ def _call_audiveris_local(data: bytes, filename: str) -> str:
         raise StaffRecognizeError("Audiveris n'a produit aucun MusicXML")
 
 
-def _fetch_musicxml(data: bytes, filename: str) -> str:
+def _fetch_musicxml(data: bytes, filename: str, is_cancelled: CancelFn = None) -> str:
     """Appelle Audiveris (HTTP ou local) et renvoie le MusicXML texte."""
     url = _audiveris_url()
     if url and _audiveris_available():
         try:
-            return _call_audiveris_http(data, filename)
+            return _call_audiveris_http(data, filename, is_cancelled=is_cancelled)
         except StaffRecognizeError:
             if shutil.which(os.environ.get("AUDIVERIS_BIN", "Audiveris")):
                 return _call_audiveris_local(data, filename)
@@ -191,6 +255,7 @@ def staff_pdf_to_score(
     time_override: "tuple[int, int] | None" = None,
     on_chord: str = "split",
     on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> dict:
     """PDF portée → même forme que pdf_to_score (header, voices, musicxml).
 
@@ -201,13 +266,17 @@ def staff_pdf_to_score(
     peu fiable ; à défaut, il est inféré du contenu (cf. read_musicxml).
     ``on_chord`` : 'split' (défaut) scinde les accords de portée en 2 voix pour
     récupérer le SATB condensé (T+B, S+A) ; 'top' ne garde que la note du haut."""
+    # Dernier point de controle avant la JVM. Une fois l'appel parti on ne peut plus
+    # l'interrompre depuis ici (c'est l'objet de N3, cote audiveris-service) ; au moins on
+    # ne demarre pas 15-30 min de reconnaissance pour un client deja parti.
+    check(is_cancelled)
     progress(
         on_progress,
         phase="audiveris",
         pct=20,
         message="Reconnaissance portée (Audiveris)…",
     )
-    musicxml = _fetch_musicxml(data, filename)
+    musicxml = _fetch_musicxml(data, filename, is_cancelled=is_cancelled)
     progress(
         on_progress,
         phase="convert",

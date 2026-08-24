@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from .extract import Run
+from ..cancel import CancelFn, check
 from ..progress import ProgressFn, progress
 
 
@@ -526,7 +527,8 @@ def header_text_runs(bgr, *, band_frac: float = 0.20, font: str = "text") -> Lis
 
 
 def ocr_to_runs(
-    source: Union[str, bytes], *, dpi: int = 300, on_progress: ProgressFn = None
+    source: Union[str, bytes], *, dpi: int = 300, on_progress: ProgressFn = None,
+    is_cancelled: CancelFn = None,
 ) -> List[Run]:
     """PDF scanné ou image → liste de ``Run`` (texte + positions)."""
     if not ocr_available():
@@ -551,6 +553,7 @@ def ocr_to_runs(
 
     n_pages = len(pages) or 1
     for page_idx, (bgr, scale) in enumerate(pages):
+        check(is_cancelled)
         pct = 10 + 55 * page_idx / n_pages
         progress(
             on_progress,

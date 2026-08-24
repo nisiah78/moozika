@@ -12,6 +12,11 @@ security:
         main:
             lazy: true
             provider: users_in_memory
+            # API sans session : api_platform.yaml declare `defaults.stateless: true`, donc
+            # toute lecture de session leve « Session was used while the request was declared
+            # stateless ». Sans cette ligne, le token storage passe par la session et TOUS les
+            # POST repondent 500 (verifie sur /scores et /convert/solfa-parse).
+            stateless: true
 
             # activate different ways to authenticate
             # https://symfony.com/doc/current/security.html#the-firewall

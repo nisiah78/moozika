@@ -43,6 +43,33 @@ class ObjectStorage
         return $key;
     }
 
+    /**
+     * Fichier source d'une transcription (PDF/image), en attente de traitement par le worker.
+     *
+     * Séparé de `putMusicXml` par le préfixe : `uploads/` est du transitoire à purger une fois
+     * le job terminé, `scores/` est le durable. Pour relire ou supprimer, `get()`/`delete()`
+     * génériques suffisent — le job porte sa `sourceKey`.
+     */
+    public function putSource(string $jobId, string $filename, string $body, string $contentType): string
+    {
+        $ext = strtolower(pathinfo($filename, \PATHINFO_EXTENSION));
+        // Bornée volontairement : le nom de fichier vient du client, il ne doit pas pouvoir
+        // fabriquer une clé arbitraire dans le bucket.
+        if (1 !== preg_match('/^[a-z0-9]{1,8}$/', $ext)) {
+            $ext = 'bin';
+        }
+
+        $key = sprintf('uploads/%s/source.%s', $jobId, $ext);
+        $this->client->putObject([
+            'Bucket' => $this->bucket,
+            'Key' => $key,
+            'Body' => $body,
+            'ContentType' => $contentType,
+        ]);
+
+        return $key;
+    }
+
     public function get(string $key): string
     {
         $result = $this->client->getObject([

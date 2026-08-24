@@ -28,3 +28,4 @@ docs/**/*.bmp
 docs/**/*.tiff
 docs/**/*.ico
 docs/**/*.webp
+docs/draft/*

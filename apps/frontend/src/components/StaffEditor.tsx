@@ -125,6 +125,7 @@ function VoiceStaff({
   onShiftOctave,
   showDirectives,
   busy,
+  readOnly,
   measureWidths,
   measureStarts,
   totalW,
@@ -140,6 +141,7 @@ function VoiceStaff({
   onShiftOctave: (delta: number) => void;
   showDirectives: boolean;
   busy: boolean;
+  readOnly?: boolean;
   /** Grille horizontale PARTAGÉE par toutes les voix (alignement + scroll unique). */
   measureWidths: number[];
   measureStarts: number[];
@@ -164,18 +166,22 @@ function VoiceStaff({
   return (
     <>
       {/* Étiquette de voix : collée à gauche (reste visible pendant le scroll). */}
-      <div className="staff-label sticky left-0 z-30 flex w-fit items-center gap-1 bg-[#fffcf5] pr-3 text-[11px] font-semibold text-stone-600">
+      <div className="staff-label sticky left-0 z-30 flex w-fit items-center gap-1 bg-paper pr-3 text-[11px] font-semibold" style={{ color: "var(--paper-ink)" }}>
         <span title={voice.name}>
           {voiceAbbr(voice.name)}{" "}
-          <span className="font-normal text-stone-400">
+          <span className="font-normal opacity-55">
             ({clef === "bass" ? "clé de fa" : "clé de sol"})
           </span>
         </span>
-        {/* Décaler toute la voix d'une octave (corrige une erreur d'octave OMR). */}
-        <span className="ml-1 inline-flex overflow-hidden rounded border border-stone-300">
+        {/* Décaler toute la voix d'une octave (corrige une erreur d'octave OMR).
+            Pure affordance d'édition : en lecture on ne la rend pas du tout,
+            plutôt que de la désactiver — elle sort ainsi aussi de l'arbre
+            d'accessibilité. */}
+        {!readOnly && (
+        <span className="ml-1 inline-flex overflow-hidden border" style={{ borderColor: "var(--paper-div)" }}>
           <button
             type="button"
-            className="px-1 leading-none text-stone-500 hover:bg-stone-100 disabled:opacity-40"
+            className="px-1 leading-none opacity-70 hover:opacity-100 disabled:opacity-30"
             title="Descendre toute la voix d'une octave"
             disabled={busy}
             onClick={() => onShiftOctave(-1)}
@@ -184,7 +190,7 @@ function VoiceStaff({
           </button>
           <button
             type="button"
-            className="border-l border-stone-300 px-1 leading-none text-stone-500 hover:bg-stone-100 disabled:opacity-40"
+            className="border-l px-1 leading-none opacity-70 hover:opacity-100 disabled:opacity-30" style={{ borderColor: "var(--paper-div)" }}
             title="Monter toute la voix d'une octave"
             disabled={busy}
             onClick={() => onShiftOctave(1)}
@@ -192,6 +198,7 @@ function VoiceStaff({
             8↑
           </button>
         </span>
+        )}
       </div>
       <div className="staff-stage relative" style={{ width: totalW, height: totalH }}>
         {showDirectives &&
@@ -206,7 +213,7 @@ function VoiceStaff({
               >
                 <button
                   type="button"
-                  className="pointer-events-auto flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-stone-400 bg-white text-xs font-bold text-stone-600 opacity-70 shadow-sm hover:opacity-100"
+                  className="staff-chip-btn pointer-events-auto flex h-5 w-5 shrink-0 items-center justify-center text-xs font-bold opacity-70 hover:opacity-100"
                   title="Directive en tête de mesure (D.C., tempo, métrique, Doh…)"
                   disabled={busy}
                   aria-label={`Ajouter une directive mesure ${mi + 1}`}
@@ -222,12 +229,12 @@ function VoiceStaff({
                   {chips.map((chip) => (
                     <span
                       key={chip.key}
-                      className="inline-flex items-center gap-0.5 rounded border border-stone-300 bg-white/95 px-1 py-0.5 text-[10px] font-semibold text-stone-700"
+                      className="staff-chip inline-flex items-center gap-0.5 px-1 py-0.5 text-[10px] font-semibold"
                     >
                       {chip.label}
                       <button
                         type="button"
-                        className="text-stone-400 hover:text-red-700"
+                        className="opacity-55 hover:opacity-100 hover:text-[var(--err)]"
                         disabled={busy}
                         aria-label={`Retirer ${chip.label}`}
                         onClick={(e) => {
@@ -250,7 +257,7 @@ function VoiceStaff({
           viewBox={`0 0 ${totalW} ${totalH}`}
           className="absolute inset-0 block select-none"
         >
-          <text x={10} y={yOf(4) + 5} className="fill-stone-700" fontSize="20">
+          <text x={10} y={yOf(4) + 5} className="staff-ink" fontSize="20">
             {clef === "bass" ? "𝄢" : "𝄞"}
           </text>
 
@@ -265,7 +272,10 @@ function VoiceStaff({
 
             return (
               <g key={mi}>
-                {Array.from({ length: topPos - bottomPos + 1 }, (_, i) => {
+                {/* Zones de clic d'insertion de note : uniquement en édition.
+                    Les rendre en lecture donnerait un curseur « main » et un
+                    survol coloré sur une partition qu'on ne peut pas modifier. */}
+                {!readOnly && Array.from({ length: topPos - bottomPos + 1 }, (_, i) => {
                   const pos = topPos - i;
                   const y = yOf(pos);
                   return (
@@ -275,7 +285,7 @@ function VoiceStaff({
                       y={y - LINE_GAP / 4}
                       width={mw}
                       height={LINE_GAP / 2}
-                      className="fill-transparent hover:fill-amber-200/35 cursor-pointer"
+                      className="staff-slot"
                       onClick={(e) => {
                         e.stopPropagation();
                         const svgRect = (e.target as SVGRectElement).ownerSVGElement!.getBoundingClientRect();
@@ -307,8 +317,11 @@ function VoiceStaff({
                   );
                 })}
 
+                {/* `linePositions` ne contient que 0..8 : la branche « hors
+                    portée » de l'ancien ternaire était inatteignable, vestige
+                    de l'époque où des lignes supplémentaires étaient tracées
+                    ici (cf. le commentaire de linePositions). */}
                 {linePositions.map((pos) => {
-                  const isMain = pos >= 0 && pos <= 8;
                   return (
                     <line
                       key={`line-${mi}-${pos}`}
@@ -316,8 +329,8 @@ function VoiceStaff({
                       x2={mx + mw}
                       y1={yOf(pos)}
                       y2={yOf(pos)}
-                      stroke={isMain ? "#444" : "#999"}
-                      strokeWidth={isMain ? 1 : 0.75}
+                      className="staff-rule--soft"
+                      strokeWidth={1}
                       pointerEvents="none"
                     />
                   );
@@ -328,7 +341,7 @@ function VoiceStaff({
                   x2={mx + mw}
                   y1={yOf(8)}
                   y2={yOf(0)}
-                  stroke="#333"
+                  className="staff-rule"
                   strokeWidth={1.2}
                   pointerEvents="none"
                 />
@@ -340,7 +353,7 @@ function VoiceStaff({
                     x2={mx}
                     y1={yOf(8)}
                     y2={yOf(0)}
-                    stroke="#333"
+                    className="staff-rule"
                     strokeWidth={1.2}
                     pointerEvents="none"
                   />
@@ -349,14 +362,14 @@ function VoiceStaff({
                 {/* Double barre avant un changement de métrique */}
                 {meterChanged && (
                   <g pointerEvents="none">
-                    <line x1={mx - 6} x2={mx - 6} y1={yOf(8)} y2={yOf(0)} stroke="#333" strokeWidth={1} />
-                    <line x1={mx - 2.5} x2={mx - 2.5} y1={yOf(8)} y2={yOf(0)} stroke="#333" strokeWidth={1.4} />
+                    <line x1={mx - 6} x2={mx - 6} y1={yOf(8)} y2={yOf(0)} className="staff-rule" strokeWidth={1} />
+                    <line x1={mx - 2.5} x2={mx - 2.5} y1={yOf(8)} y2={yOf(0)} className="staff-rule" strokeWidth={1.4} />
                   </g>
                 )}
 
                 {/* Signature rythmique : au début et à chaque changement */}
                 {(mi === 0 || meterChanged) && (
-                  <g pointerEvents="none" className="fill-stone-700">
+                  <g pointerEvents="none" className="staff-ink">
                     <text x={mx + 5} y={yOf(6) + 5} fontSize="13" fontWeight={700} textAnchor="middle">
                       {ts.beats}
                     </text>
@@ -372,7 +385,7 @@ function VoiceStaff({
                     x={mx + 2}
                     y={yOf(8) - 5}
                     fontSize="9"
-                    className="fill-stone-400"
+                    className="staff-ink--soft"
                     pointerEvents="none"
                   >
                     {mi + 1}
@@ -452,7 +465,7 @@ function VoiceStaff({
                           x2={nx + 8}
                           y1={yOf(lp)}
                           y2={yOf(lp)}
-                          stroke="#444"
+                          className="staff-rule--soft"
                           strokeWidth={1}
                         />
                       ))}
@@ -493,7 +506,7 @@ function VoiceStaff({
               />
               <button
                 type="button"
-                className="pointer-events-auto absolute left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full border border-stone-400 bg-white text-xs font-bold text-stone-700 opacity-0 shadow transition group-hover/measure:opacity-100"
+                className="staff-chip-btn pointer-events-auto absolute left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center text-xs font-bold opacity-0 transition group-hover/measure:opacity-100"
                 style={{ top: Math.max(2, staffTopY - 22) }}
                 title="Ajouter une ligne supplémentaire au-dessus"
                 onClick={() => onAddLedger("above")}
@@ -502,7 +515,7 @@ function VoiceStaff({
               </button>
               <button
                 type="button"
-                className="pointer-events-auto absolute left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full border border-stone-400 bg-white text-xs font-bold text-stone-700 opacity-0 shadow transition group-hover/measure:opacity-100"
+                className="staff-chip-btn pointer-events-auto absolute left-1/2 z-10 flex h-5 w-5 -translate-x-1/2 items-center justify-center text-xs font-bold opacity-0 transition group-hover/measure:opacity-100"
                 style={{ top: staffBottomY + 8 }}
                 title="Ajouter une ligne supplémentaire en-dessous"
                 onClick={() => onAddLedger("below")}
@@ -520,9 +533,17 @@ function VoiceStaff({
 export function StaffEditor({
   result,
   onChange,
+  readOnly,
 }: {
   result: ScoreResult;
   onChange: (next: ScoreResult) => void;
+  /**
+   * Mode lecture. `.moo-sheet--read` masque les boutons de la portée en CSS,
+   * mais les boutons d'octave de l'étiquette de voix et les zones de clic des
+   * colonnes ne sont pas dans cette liste : sans ce prop, ils restent
+   * atteignables au clavier et à la souris.
+   */
+  readOnly?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -724,11 +745,11 @@ export function StaffEditor({
 
   return (
     <div className="space-y-2">
-      {busy && <p className="text-xs text-stone-500">Mise à jour de la partition…</p>}
+      {busy && <p className="text-xs opacity-70">Mise à jour de la partition…</p>}
       {error && <p className="text-xs text-red-700">{error}</p>}
       {/* Un SEUL système : toutes les portées empilées partagent un unique scroll
           horizontal et la même grille de mesures (colonnes alignées). */}
-      <div className="staff-scroll overflow-x-auto rounded border border-stone-200 bg-[#fffcf5] py-2">
+      <div className="staff-scroll overflow-x-auto border border-[color:var(--paper-div)] bg-paper py-2">
         <div className="staff-system" style={{ width: layout.totalW }}>
           {result.voices.map((voice, vi) => {
             const L = ledgerFor(vi);
@@ -739,6 +760,7 @@ export function StaffEditor({
             return (
               <div key={voice.name} className={startsAccomp ? "mt-4" : vi > 0 ? "mt-1" : ""}>
                 <VoiceStaff
+                  readOnly={readOnly}
                   voice={voice}
                   voiceIndex={vi}
                   ledgerAbove={L.above}
@@ -831,7 +853,7 @@ export function StaffEditor({
           }
         />
       )}
-      <p className="text-xs text-stone-500">
+      <p className="text-xs opacity-70">
         Cliquez une note/silence : hauteur (d–t, Doh = {result.header.tonic}) ou
         valeur (ronde…double-croche). Le + en tête de mesure ajoute D.C./tempo/métrique/tonalité.
       </p>

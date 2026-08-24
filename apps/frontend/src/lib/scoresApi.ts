@@ -1,6 +1,8 @@
 import type { ScoreResult, Voice } from "@/lib/types";
 
-const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/$/, "");
+// Exporté : transcriptionsApi.ts parle à la même API et doit utiliser la même base et
+// la même convention d'erreur (`detail`). Deux helpers séparés dériveraient.
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080").replace(/\/$/, "");
 
 export interface ScoreListItem {
   id: string;
@@ -21,7 +23,7 @@ export interface ScoreDetail extends ScoreListItem {
   warnings?: string[];
 }
 
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
+export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: {

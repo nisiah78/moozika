@@ -16,7 +16,7 @@ import urllib.error
 import urllib.request
 from typing import Any, AsyncIterator, Dict
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,7 @@ def _parse_time(spec: str | None) -> "tuple[int, int] | None":
     except ValueError:
         return None
 
+from .cancel import Cancelled
 from .pdf import PdfSolfaError, pdf_to_score
 from .solfa import parse_solfa, to_musicxml, to_musicxml_multi
 from .solfa.from_musicxml import MusicXmlError, read_musicxml, read_musicxml_metadata
@@ -181,8 +182,29 @@ async def pdf_parse(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+def _error_event(exc: BaseException) -> Dict[str, Any]:
+    """Événement SSE `error` : message lisible + code = nom de la classe d'exception.
+
+    Le `code` existe parce que la classe d'exception PORTE déjà la classification (rythme,
+    mètre non géré, rien reconnu, format invalide…) mais que cette information se perdait sur
+    le fil : le consommateur devait la redeviner depuis le texte, et se cassait à la moindre
+    reformulation d'un message.
+
+    Champ **additif** : les consommateurs qui ne lisent que `detail` (le front, cf.
+    apps/frontend/src/lib/omrStream.ts) ne changent pas.
+
+    Le code décrit l'exception réellement levée, pas la cause racine : `PdfSolfaError` emballe
+    parfois un échec Audiveris dans son *texte* en chaînant `from solfa_exc`
+    (app/pdf/document.py:350), donc remonter `__cause__` désignerait la mauvaise cause. Le
+    consommateur doit garder ses heuristiques sur `detail` pour distinguer une panne
+    d'infrastructure d'une partition illisible.
+    """
+    return {"event": "error", "detail": str(exc), "code": type(exc).__name__}
+
+
 @app.post("/pdf/parse/stream")
 async def pdf_parse_stream(
+    request: Request,
     file: UploadFile = File(...),
     tonic: str | None = Form(None),
 ) -> StreamingResponse:
@@ -197,6 +219,12 @@ async def pdf_parse_stream(
     tonic_override = tonic.strip() if tonic else None
     out: queue.Queue = queue.Queue()
 
+    # Annulation cooperative : le generateur (boucle asyncio) constate la deconnexion et
+    # leve ce drapeau ; le thread de travail le teste a ses points de controle. On ne peut
+    # pas faire mieux : le travail est du code natif (Paddle/OpenCV) ou une JVM, non
+    # interruptible de l'exterieur.
+    cancel = threading.Event()
+
     def on_progress(event: str, payload: Dict[str, Any]) -> None:
         out.put({"event": event, **payload})
 
@@ -207,12 +235,17 @@ async def pdf_parse_stream(
                 filename=filename,
                 tonic_override=tonic_override,
                 on_progress=on_progress,
+                is_cancelled=cancel.is_set,
             )
             out.put({"event": "done", "result": result})
-        except (PdfSolfaError, StaffRecognizeError, MusicXmlError) as exc:
-            out.put({"event": "error", "detail": str(exc)})
+        except Cancelled:
+            # Le client a abandonne : aucun evenement a emettre, personne n'ecoute.
+            pass
         except Exception as exc:  # noqa: BLE001 — surface au client SSE
-            out.put({"event": "error", "detail": str(exc)})
+            # Couvre les classes attendues (PdfSolfaError, StaffRecognizeError, MusicXmlError,
+            # et les LexError/ParseError/RhythmError/MeterError/OcrError/ExtractError qui
+            # remontent depuis les sous-modules) ET l'imprévu.
+            out.put(_error_event(exc))
         finally:
             out.put(_SENTINEL)
 
@@ -234,8 +267,18 @@ async def pdf_parse_stream(
             try:
                 item = await asyncio.to_thread(out.get, True, _HEARTBEAT_SEC)
             except queue.Empty:
+                # Seule la boucle asyncio voit la deconnexion (evenement ASGI). La latence
+                # de detection est donc celle de cette boucle : mesuree jusqu'a ~90 s quand
+                # l'OCR natif retient le GIL. C'est le prix du coopératif — a comparer aux
+                # 15-30 min de travail poursuivi dans le vide sans ce mecanisme.
+                if await request.is_disconnected():
+                    cancel.set()
+                    break
                 yield b": ping\n\n"
                 continue
+            if await request.is_disconnected():
+                cancel.set()
+                break
             if item is _SENTINEL:
                 break
             event = item.pop("event")

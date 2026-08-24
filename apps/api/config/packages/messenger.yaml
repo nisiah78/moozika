@@ -1,0 +1,32 @@
+framework:
+    messenger:
+        failure_transport: failed
+
+        transports:
+            # Transcription de partition : messages LONGS (Audiveris peut tourner 15-30 min,
+            # cf. apps/audiveris-service/README.md).
+            transcribe:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    queue_name: transcribe
+                    # Doit dépasser la plus longue exécution possible. Au défaut (3600 s) un
+                    # job de 30 min encore en cours serait considéré perdu et REDÉLIVRÉ,
+                    # lançant une seconde transcription en parallèle de la première.
+                    redeliver_timeout: 7200
+                retry_strategy:
+                    # Un échec d'OMR est DÉTERMINISTE (PDF illisible, notation absente) :
+                    # le rejouer coûte 30 min pour le même résultat. Le handler lève donc
+                    # UnrecoverableMessageHandlingException pour ces cas, et ce retry ne
+                    # couvre que les incidents d'infrastructure (omr-service qui redémarre).
+                    max_retries: 1
+                    delay: 5000
+
+            failed:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options:
+                    queue_name: failed
+
+            sync: 'sync://'
+
+        routing:
+            'App\Message\TranscribeMessage': transcribe

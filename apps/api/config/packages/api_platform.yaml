@@ -1,8 +1,14 @@
 api_platform:
     title: Moozika API
     version: 0.1.0
+    # Formats déclarés explicitement : le défaut d'API Platform est JSON-LD SEUL, ce qui
+    # faisait répondre 406 à `Accept: application/json` — l'en-tête que le front envoie
+    # systématiquement (apps/frontend/src/lib/scoresApi.ts). jsonld reste en premier, donc
+    # un client sans en-tête `Accept` garde le comportement actuel.
+    formats:
+        jsonld: ['application/ld+json']
+        json: ['application/json']
     defaults:
         stateless: true
         cache_headers:
             vary: ['Content-Type', 'Authorization', 'Origin']
-

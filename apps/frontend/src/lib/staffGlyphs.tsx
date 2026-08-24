@@ -138,7 +138,7 @@ function AugmentationDots({
           cx={x + 9 + i * 5}
           cy={y}
           r={1.6}
-          className="fill-stone-900"
+          className="staff-ink"
         />
       ))}
     </>
@@ -168,7 +168,7 @@ function StemAndFlags({
         x2={stemX}
         y1={cy}
         y2={stemEnd}
-        stroke="#111"
+        className="staff-rule"
         strokeWidth={1.2}
       />
       {flags >= 1 && (
@@ -179,7 +179,7 @@ function StemAndFlags({
               : `M ${stemX} ${stemEnd} c 8 -4, 10 -12, 2 -18`
           }
           fill="none"
-          stroke="#111"
+          className="staff-rule"
           strokeWidth={1.4}
           strokeLinecap="round"
         />
@@ -192,7 +192,7 @@ function StemAndFlags({
               : `M ${stemX} ${stemEnd - 7} c 8 -4, 10 -12, 2 -18`
           }
           fill="none"
-          stroke="#111"
+          className="staff-rule"
           strokeWidth={1.4}
           strokeLinecap="round"
         />
@@ -219,7 +219,7 @@ export function StaffRestGlyph({
         x={nx}
         y={cy + 5}
         textAnchor="middle"
-        className="fill-stone-800"
+        className="staff-ink"
         fontSize={t === "whole" || t === "half" ? 18 : 16}
       >
         {restGlyph(t)}
@@ -255,7 +255,7 @@ export function StaffNoteGlyph({
         rx={rx}
         ry={ry}
         transform={`rotate(-15 ${nx} ${cy})`}
-        className={hollow ? "fill-none stroke-stone-900" : "fill-stone-900"}
+        className={hollow ? "staff-ink--hollow" : "staff-ink"}
         strokeWidth={hollow ? 1.4 : undefined}
       />
       <StemAndFlags nx={nx} cy={cy} type={t} stemUp={stemUp} />

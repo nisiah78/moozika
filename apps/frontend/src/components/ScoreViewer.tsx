@@ -23,13 +23,15 @@ export const ScoreViewer = forwardRef<
     tempo: TempoSettings;
     onTempoChange: (next: TempoSettings) => void;
     onChange: (next: ScoreResult) => void;
+    /** Mode lecture : voir SolfaScore / StaffEditor. */
+    readOnly?: boolean;
   }
 >(function ScoreViewer(
-  { result, mode, tempo, onTempoChange, onChange },
+  { result, mode, tempo, onTempoChange, onChange, readOnly },
   ref,
 ) {
   if (mode === "score") {
-    return <StaffEditor result={result} onChange={onChange} />;
+    return <StaffEditor result={result} onChange={onChange} readOnly={readOnly} />;
   }
 
   return (
@@ -39,6 +41,7 @@ export const ScoreViewer = forwardRef<
       tempo={tempo}
       onTempoChange={onTempoChange}
       onChange={onChange}
+      readOnly={readOnly}
     />
   );
 });

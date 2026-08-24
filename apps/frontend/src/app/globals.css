@@ -2,9 +2,489 @@
 @tailwind components;
 @tailwind utilities;
 
-/* OSMD injecte du SVG ; on le laisse s'étendre en largeur. */
-.osmd-container svg {
-  max-width: none;
+/* ══════════════════════════════════════════════════════════════════════════
+   Tokens du design « moozika » (design system Modernist, variante sombre)
+   Source de vérité de la palette : docs/Moozika.html. Ces variables sont
+   référencées par tailwind.config.ts (colors/fontFamily/boxShadow), donc les
+   changer ici suffit à re-thémer l'app — y compris les utilitaires Tailwind.
+
+   Deux sous-palettes coexistent volontairement :
+     — le CHROME de l'app est sombre (--color-*) ;
+     — la PARTITION est une « feuille » claire (--paper-*), posée sur le canvas.
+   La feuille est un îlot clair dans une app sombre : c'est le design, pas un
+   oubli. `.moo-sheet` (étape 2) repointe les tokens localement pour son
+   sous-arbre, ce qu'une couleur figée dans la config Tailwind ne permettrait pas.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  --color-bg: #15120d;
+  --color-surface: #211c15;
+  --color-surface-2: #2c261d;
+  --color-text: #f2ebda;
+  --color-accent: #f2751f;
+  --color-accent-600: #d95f10;
+  --color-accent-700: #b34c0a;
+  --color-divider: color-mix(in srgb, #f2ebda 16%, transparent);
+
+  /* La feuille de partition et son encre. */
+  --paper: #f6f0e2;
+  --paper-ink: #1a1712;
+  --paper-line: #b7ad97;
+  --paper-div: color-mix(in srgb, #1a1712 16%, transparent);
+
+  /* Le canvas sous la feuille est PLUS sombre que le fond global (hex nu dans
+     la maquette) : c'est ce contraste qui fait « décoller » la feuille. */
+  --canvas: #0f0d09;
+
+  --ok: #5aa469;
+  --err: #e8604c;
+
+  /* Archivo porte les titres ET le corps ; JetBrains Mono porte toute valeur
+     musicale (sol-fa, cellules, nuances, tempo, abréviations de voix).
+     Les variables --font-* sont injectées par next/font depuis layout.tsx. */
+  --font-heading: var(--font-archivo), system-ui, sans-serif;
+  --font-body: var(--font-archivo), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-heading-weight: 800;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Ombres teintées neutre-900, donc presque invisibles sur fond sombre :
+     dans ce design l'élévation est portée par les BORDURES, pas par l'ombre.
+     On les garde telles quelles — elles servent surtout à la feuille claire. */
+  --shadow-sm: 0 1px 2px color-mix(in srgb, #2d2b2b 14%, transparent);
+  --shadow-md: 0 3px 10px color-mix(in srgb, #2d2b2b 16%, transparent);
+  --shadow-lg: 0 12px 32px color-mix(in srgb, #2d2b2b 22%, transparent);
+
+  /* Largeurs de structure. En variables et non en nombres magiques : le dock
+     piano se positionne par calc() sur elles (étape 9), et un futur repli
+     mobile n'aura qu'à les redéfinir sous un breakpoint. */
+  --moo-sidebar-w: 256px;
+  --moo-rail-w: 84px;
+  --moo-canvas-pad-bottom: 30px;
+}
+
+/* Dans `@layer base` et non en CSS nu : ce fichier est inclus APRÈS
+   `@tailwind utilities`, donc du CSS nu ici battrait les utilitaires (un
+   `font-semibold` sur un <h1> perdrait contre `font-weight: 800`). Le layer
+   remet ces styles à leur place : socle surchargeable. */
+@layer base {
+  html,
+  body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-body);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    line-height: 1.12;
+    letter-spacing: -0.015em;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-divider);
+  }
+}
+
+/* Les 4 seules animations du design. */
+@keyframes moo-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes moo-toast-in {
+  from { transform: translateY(14px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes moo-pop {
+  from { transform: scale(0.96); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes moo-drawer {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Design system « moo-* »
+   Portage des classes du design (docs/Moozika.html). Seules les classes
+   RÉELLEMENT instanciées par les écrans sont reprises : le design system
+   Modernist en définit une quinzaine d'autres (.card, .table, .dialog, .nav,
+   .radio, .elev-*, .tag-accent…) qu'aucun écran n'utilise, et .tag-accent est
+   même un piège — elle reste sur la rampe CLAIRE, donc produirait une puce
+   blanche dans une UI sombre.
+
+   Pourquoi du CSS et non des composants React : ces déclarations sont déjà
+   écrites dans la maquette (copie + repréfixage, pas conception), plusieurs ne
+   s'expriment pas proprement en utilitaires (`:has(input:checked)`,
+   `.seg-opt + .seg-opt`), et le CSS n'entre pas dans le dénominateur du score
+   eslint. Les composants React sont réservés à ce qui a du COMPORTEMENT.
+
+   Le préfixe `moo-` s'aligne sur les `.solfa-*` / `.staff-*` existants et
+   évite de capturer des noms génériques (.card, .input, .table).
+   ══════════════════════════════════════════════════════════════════════════ */
+
+@layer components {
+  /* ── Boutons ──────────────────────────────────────────────────────────── */
+
+  .moo-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    text-decoration: none;
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    /* 14px : identique au .moo-input, les deux se côtoient dans les barres. */
+    font-size: 14px;
+    line-height: 1.2;
+    color: var(--color-text);
+    background: transparent;
+    border: 1px solid transparent;
+    padding: var(--space-2) calc(var(--space-3) * 1.2);
+  }
+
+  .moo-btn svg {
+    display: block;
+  }
+
+  .moo-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .moo-btn--primary {
+    background: var(--color-accent);
+    /* Le texte sur accent est la couleur de FOND de l'app, pas du blanc :
+       c'est ce qui donne au design son aspect « encre sur orange ». */
+    color: var(--color-bg);
+  }
+
+  .moo-btn--primary:hover:not(:disabled) {
+    background: var(--color-accent-600);
+  }
+
+  .moo-btn--primary:active:not(:disabled) {
+    background: var(--color-accent-700);
+  }
+
+  .moo-btn--secondary {
+    border-color: var(--color-divider);
+  }
+
+  .moo-btn--secondary:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  }
+
+  .moo-btn--secondary:active:not(:disabled) {
+    background: color-mix(in srgb, var(--color-text) 14%, transparent);
+  }
+
+  .moo-btn--ghost {
+    color: var(--color-accent);
+    padding-inline: var(--space-1);
+  }
+
+  .moo-btn--ghost:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  }
+
+  .moo-btn--ghost:active:not(:disabled) {
+    background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+
+  /* ── Formulaires ──────────────────────────────────────────────────────── */
+
+  .moo-field > label {
+    display: block;
+    font-size: 12px;
+    margin-bottom: 5px;
+    color: color-mix(in srgb, var(--color-text) 70%, transparent);
+  }
+
+  .moo-input {
+    width: 100%;
+    min-height: 36px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 14px;
+    color: var(--color-text);
+    caret-color: var(--color-accent);
+    background: var(--color-surface);
+    border: 1px solid var(--color-divider);
+  }
+
+  .moo-input:hover {
+    border-color: color-mix(in srgb, var(--color-text) 45%, transparent);
+  }
+
+  .moo-input:focus-visible {
+    border-color: var(--color-accent);
+    outline-offset: 0;
+  }
+
+  textarea.moo-input {
+    min-height: 90px;
+    resize: vertical;
+  }
+
+  /* ── Segmented control ────────────────────────────────────────────────── */
+  /* La sélection passe par `:has(input:checked)` : le radio natif reste la
+     source de vérité (clavier, groupe, formulaire) et le style suit tout seul,
+     sans état React à synchroniser. */
+
+  .moo-seg {
+    display: inline-flex;
+    overflow: hidden;
+    border: 1px solid var(--color-divider);
+  }
+
+  .moo-seg-opt {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .moo-seg-opt input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    pointer-events: none;
+  }
+
+  .moo-seg-opt + .moo-seg-opt {
+    border-left: 1px solid var(--color-divider);
+  }
+
+  .moo-seg-opt:has(input:checked) {
+    background: var(--color-accent);
+    color: var(--color-bg);
+  }
+
+  .moo-seg-opt:not(:has(input:checked)):hover {
+    background: color-mix(in srgb, var(--color-text) 7%, transparent);
+  }
+
+  .moo-seg-opt:has(input:focus-visible) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+  }
+
+  .moo-seg-opt:has(input:disabled) {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* ── Étiquettes & filets ──────────────────────────────────────────────── */
+
+  .moo-tag {
+    display: inline-flex;
+    align-items: center;
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    padding: 3px 10px;
+    background: var(--color-surface-2);
+    color: var(--color-text);
+  }
+
+  .moo-tag--outline {
+    background: transparent;
+    border: 1px solid var(--color-accent);
+    color: var(--color-accent);
+  }
+
+  .moo-hr {
+    height: 2px;
+    border: 0;
+    margin: var(--space-4) 0;
+    background: var(--color-divider);
+  }
+
+  /* Sur-titre en capitales accent, présent sur tous les écrans du design. */
+  .moo-kicker {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--color-accent);
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════
+     Structure — absente du design system Modernist, propre à moozika.
+     Les largeurs viennent des variables de :root, jamais de nombres écrits
+     ici : le dock piano se positionne par calc() sur elles et un futur
+     repli mobile n'aura qu'à les redéfinir sous un breakpoint.
+     ══════════════════════════════════════════════════════════════════════ */
+
+  .moo-sidebar {
+    width: var(--moo-sidebar-w);
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow: auto;
+    background: var(--color-surface);
+    border-right: 2px solid var(--color-divider);
+  }
+
+  .moo-rail {
+    width: var(--moo-rail-w);
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    background: var(--color-surface);
+    border-right: 2px solid var(--color-divider);
+  }
+
+  /* Le canvas est PLUS sombre que le fond global : c'est ce contraste qui
+     fait « décoller » la feuille de partition posée dessus. */
+  /* Plan de travail du viewer : hauteur BORNÉE, pour que `.moo-canvas` soit le
+     vrai conteneur défilant plutôt que le document. C'est aussi ce qui donnera
+     à l'auto-défilement de lecture un port de scroll bien défini. */
+  .moo-workspace {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .moo-canvas {
+    flex: 1;
+    min-width: 0;
+    overflow: auto;
+    background: var(--canvas);
+    padding: 30px;
+    padding-bottom: var(--moo-canvas-pad-bottom);
+    /* Zone « optimale » du conteneur, lue par le défilement automatique de
+       lecture. `scroll-padding-bottom` suit le dock piano : quand il est
+       ouvert, la mesure jouée ne doit pas s'arrêter derrière lui. C'est LA
+       façon standard de déclarer une marge masquée — le module de défilement
+       n'a ainsi aucun pixel codé en dur. */
+    scroll-padding: 24px;
+    scroll-padding-bottom: calc(var(--moo-canvas-pad-bottom) + 24px);
+  }
+
+  /* La « feuille ». Elle repointe les tokens de couleur pour SON sous-arbre :
+     tout ce qu'elle contient (partition, chips, inputs, menus) devient clair
+     sans qu'aucun composant ait à savoir qu'il vit sur du papier. C'est la
+     raison d'être des tokens en variables CSS plutôt qu'en hex Tailwind. */
+  .moo-sheet {
+    --color-bg: var(--paper);
+    --color-surface: var(--paper);
+    --color-surface-2: color-mix(in srgb, var(--paper-ink) 5%, var(--paper));
+    --color-text: var(--paper-ink);
+    --color-divider: var(--paper-div);
+
+    max-width: 960px;
+    margin: 0 auto;
+    background: var(--paper);
+    color: var(--paper-ink);
+    box-shadow: var(--shadow-lg);
+    padding: 40px 46px;
+  }
+
+  /* ── Feuille en LECTURE SEULE ─────────────────────────────────────────── */
+  /* Même liste de sélecteurs que le bloc @media print : ce sont exactement les
+     affordances d'édition. On la factorise ici plutôt que de la dupliquer, et
+     surtout plutôt que de câbler un prop `readOnly` à travers les 2500 lignes
+     de SolfaScore et les 840 de StaffEditor.
+
+     LIMITE CONNUE : le CSS ne peut pas poser `disabled`. `pointer-events:none`
+     bloque la souris, mais les <input> restent atteignables au clavier (Tab).
+     Le correctif propre est un prop `readOnly` propagé depuis le viewer —
+     prévu en étape séparée, pas mélangé au thème. */
+
+  .moo-sheet--read .solfa-bar-plus,
+  .moo-sheet--read .solfa-beat-plus,
+  .moo-sheet--read .solfa-meta-chip-x,
+  .moo-sheet--read .solfa-beat-chip-x,
+  .moo-sheet--read .solfa-addvoice-row,
+  .moo-sheet--read .staff-stage button {
+    display: none !important;
+  }
+
+  .moo-sheet--read .solfa-note-input,
+  .moo-sheet--read .solfa-lyric-input {
+    border-color: transparent;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .moo-sheet--read .solfa-note-input--error {
+    /* En lecture on garde le signal d'erreur (une cellule non reconnue reste
+       une information musicale), mais sans l'agressivité du champ éditable. */
+    background: transparent !important;
+    color: var(--err) !important;
+    border-bottom-color: var(--err) !important;
+  }
+
+  /* Dans un drawer, les champs passent sur la surface SURÉLEVÉE : `.moo-input`
+     a par défaut le même fond que le panneau, donc les champs y disparaissaient.
+     C'est ce que fait la maquette (elle surcharge chaque input du drawer). */
+  .moo-drawer .moo-input {
+    background: var(--color-surface-2);
+  }
+
+  /* ── Dock & toasts ────────────────────────────────────────────────────── */
+
+  .moo-dock {
+    position: fixed;
+    /* +2px = la bordure droite du rail. Dérivé des variables, pas le 342px
+       codé en dur de la maquette. */
+    left: calc(var(--moo-sidebar-w) + var(--moo-rail-w) + 2px);
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    background: var(--color-surface);
+    border-top: 2px solid var(--color-divider);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .moo-toasts {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 340px;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -15,10 +495,13 @@
    ══════════════════════════════════════════════════════════════════════════ */
 
 .solfa-score {
-  --solfa-ink: #1a1a1a;
-  --solfa-muted: #555;
-  --solfa-rule: #d0d0d0;
-  --solfa-paper: #ffffff;
+  /* Alias des tokens « feuille » : c'est ce qui re-thème toute la partition
+     sol-fa (≈900 lignes de CSS + les 2500 lignes de SolfaScore.tsx) sans
+     toucher un seul composant. Ne pas remettre de hex ici. */
+  --solfa-ink: var(--paper-ink);
+  --solfa-muted: color-mix(in srgb, var(--paper-ink) 55%, transparent);
+  --solfa-rule: var(--paper-div);
+  --solfa-paper: var(--paper);
   --solfa-label-w: 2.6rem;   /* largeur colonne étiquette (num + abbr voix) */
   --solfa-bar-w: 0.8rem;     /* largeur d'une barre de mesure | */
   --solfa-sep-w: 1.2rem;     /* largeur d'un séparateur : ou ! */
@@ -27,6 +510,7 @@
 
   background: var(--solfa-paper);
   color: var(--solfa-ink);
+  font-family: var(--font-mono);
   padding: 1.5rem 1.25rem 2rem;
   overflow-x: auto;
 }
@@ -110,8 +594,8 @@
   width: 2.75rem;
   padding: 0.15rem 0.25rem;
   border: 1px solid var(--solfa-rule, #d0d0d0);
-  border-radius: 0.2rem;
-  background: #fff;
+  border-radius: 0;
+  background: var(--paper);
   font: inherit;
   font-weight: 600;
   text-align: center;
@@ -126,9 +610,9 @@
 }
 
 .tempo-control__input:focus {
-  outline: 2px solid #94a3b8;
+  outline: 2px solid var(--color-accent);
   outline-offset: 1px;
-  border-color: #94a3b8;
+  border-color: var(--color-accent);
 }
 
 .tempo-control--compact .tempo-control__note {
@@ -139,17 +623,18 @@
 .tempo-control--compact .tempo-control__input {
   width: 3.25rem;
   padding: 0.25rem 0.35rem;
-  border-color: #d1d5db;
-  border-radius: 0.375rem;
+  border-color: var(--paper-div);
+  border-radius: 0;
 }
 
 .tempo-control--compact .tempo-control__input:focus {
-  outline-color: #64748b;
-  border-color: #64748b;
+  outline-color: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .solfa-score__titles {
   text-align: center;
+  font-family: var(--font-heading);
 }
 
 .solfa-score__title {
@@ -228,10 +713,10 @@
   justify-content: center;
   gap: 0.1rem;
   max-width: 100%;
-  border: 1px solid #d6d3d1;
-  border-radius: 0.2rem;
-  background: #fafaf9;
-  color: #44403c;
+  border: 1px solid var(--paper-div);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--paper-ink) 4%, transparent);
+  color: var(--solfa-ink);
   font-size: 0.58rem;
   font-weight: 600;
   line-height: 1.15;
@@ -251,7 +736,7 @@
 .solfa-meta-chip-x {
   border: none;
   background: transparent;
-  color: #a8a29e;
+  color: var(--solfa-muted);
   font-size: 0.65rem;
   line-height: 1;
   padding: 0;
@@ -259,7 +744,7 @@
 }
 
 .solfa-meta-chip-x:hover {
-  color: #b91c1c;
+  color: var(--err);
 }
 
 .solfa-beat-plus--expr {
@@ -314,8 +799,8 @@
   height: 1rem;
   margin-bottom: 0.05rem;
   border: 1px solid var(--solfa-rule);
-  border-radius: 999px;
-  background: #fff;
+  border-radius: 0;
+  background: var(--paper);
   color: var(--solfa-muted);
   font-size: 0.7rem;
   font-weight: 600;
@@ -335,10 +820,10 @@
   display: inline-flex;
   align-items: center;
   gap: 0.1rem;
-  border: 1px solid #d6d3d1;
-  border-radius: 0.2rem;
-  background: #fafaf9;
-  color: #44403c;
+  border: 1px solid var(--paper-div);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--paper-ink) 4%, transparent);
+  color: var(--solfa-ink);
   font-size: 0.58rem;
   font-weight: 700;
   line-height: 1.1;
@@ -349,7 +834,7 @@
 .solfa-beat-chip-x {
   border: none;
   background: transparent;
-  color: #a8a29e;
+  color: var(--solfa-muted);
   font-size: 0.65rem;
   line-height: 1;
   padding: 0;
@@ -357,7 +842,7 @@
 }
 
 .solfa-beat-chip-x:hover {
-  color: #b91c1c;
+  color: var(--err);
 }
 
 /* ── Rangée « ajouter une voix » (sous les barres) ─────────────────────── */
@@ -455,7 +940,7 @@
 
 /* Temps en cours de lecture : fond vert très transparent mais bien visible. */
 .solfa-beat-group--playing {
-  background-color: rgba(34, 197, 94, 0.18);
+  background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
   border-radius: 3px;
 }
 
@@ -464,10 +949,87 @@
 .staff-playhead {
   position: absolute;
   display: none;
-  background-color: rgba(34, 197, 94, 0.2);
+  background-color: color-mix(in srgb, var(--color-accent) 26%, transparent);
   border-radius: 2px;
   pointer-events: none;
   z-index: 0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Encre de la portée (StaffEditor + staffGlyphs)
+   Le rendu est du SVG maison : ses couleurs étaient écrites en hex bruts
+   (#111, #333, #444) et en utilitaires `fill-stone-*`, donc invisibles au
+   système de tokens — un trait resté en dur deviendrait quasi noir sur la
+   feuille crème, et surtout ne suivrait aucun réglage futur de --paper.
+   Tout passe désormais par ces classes.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Traits : portée, barres de mesure, hampes, crochets, lignes supplémentaires. */
+.staff-rule {
+  stroke: var(--paper-ink);
+}
+
+/* Traits secondaires (lignes supplémentaires) : présents sans dominer. */
+.staff-rule--soft {
+  /* Repli : sans lui, un color-mix non supporté rendrait `stroke` invalide,
+     donc `none` — les lignes de portée disparaîtraient purement et simplement. */
+  stroke: var(--paper-ink);
+  stroke: color-mix(in srgb, var(--paper-ink) 70%, transparent);
+}
+
+/* Aplats : têtes de notes, clés, chiffrages, silences. */
+.staff-ink {
+  fill: var(--paper-ink);
+}
+
+/* Aplats secondaires : numéros de mesure, indications discrètes. */
+.staff-ink--soft {
+  fill: var(--paper-ink);
+  fill: color-mix(in srgb, var(--paper-ink) 55%, transparent);
+}
+
+/* Note creuse (blanche, ronde) : contour seul. */
+.staff-ink--hollow {
+  fill: none;
+  stroke: var(--paper-ink);
+}
+
+/* Marge « optimale » du défilement horizontal de la portée : la mesure jouée ne
+   doit pas venir se coller au bord du conteneur. */
+.staff-scroll {
+  scroll-padding-inline: 32px;
+}
+
+/* Chrome d'édition posé SUR la portée : petites pastilles et chips. Elles
+   vivent sur le papier, donc elles suivent --paper et non les tokens sombres. */
+.staff-chip-btn {
+  border: 1px solid var(--paper-div);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--paper-ink);
+}
+
+.staff-chip-btn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.staff-chip {
+  border: 1px solid var(--paper-div);
+  background: var(--paper);
+  background: color-mix(in srgb, var(--paper-ink) 4%, var(--paper));
+  color: var(--paper-ink);
+}
+
+/* Zone de clic d'une colonne de note : invisible, révélée au survol. */
+.staff-slot {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.staff-slot:hover {
+  fill: var(--color-accent);
+  fill: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
 /* ── Barre de mesure | ─────────────────────────────────────────────────── */
@@ -619,8 +1181,8 @@
   width: 0.85rem;
   height: 0.85rem;
   border: 1px solid var(--solfa-rule);
-  border-radius: 999px;
-  background: #fff;
+  border-radius: 0;
+  background: var(--paper);
   color: var(--solfa-muted);
   font-size: 0.62rem;
   font-weight: 600;
@@ -649,10 +1211,10 @@
   display: inline-flex;
   align-items: center;
   gap: 0.1rem;
-  border: 1px solid #d6d3d1;
-  border-radius: 0.2rem;
-  background: #fafaf9;
-  color: #44403c;
+  border: 1px solid var(--paper-div);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--paper-ink) 4%, transparent);
+  color: var(--solfa-ink);
   font-size: 0.58rem;
   font-weight: 700;
   line-height: 1.1;
@@ -663,7 +1225,7 @@
 .solfa-beat-chip-x {
   border: none;
   background: transparent;
-  color: #a8a29e;
+  color: var(--solfa-muted);
   font-size: 0.65rem;
   line-height: 1;
   padding: 0;
@@ -671,7 +1233,7 @@
 }
 
 .solfa-beat-chip-x:hover {
-  color: #b91c1c;
+  color: var(--err);
 }
 
 .solfa-measure--lyrics .solfa-beat-group {
@@ -714,13 +1276,13 @@
 }
 
 .solfa-note-input:hover {
-  border-bottom-color: #ccc;
-  background: #fafafa;
+  border-bottom-color: var(--paper-div);
+  background: color-mix(in srgb, var(--paper-ink) 3%, transparent);
 }
 
 .solfa-note-input:focus {
-  border-bottom-color: #555;
-  background: #f5f5f5;
+  border-bottom-color: var(--solfa-ink);
+  background: color-mix(in srgb, var(--paper-ink) 6%, transparent);
 }
 
 .solfa-note-input:disabled {
@@ -728,15 +1290,15 @@
 }
 
 .solfa-note-input--error {
-  background: #c62828 !important;
-  color: #ffffff !important;
-  border-bottom-color: #8e0000 !important;
+  background: var(--err) !important;
+  color: var(--paper) !important;
+  border-bottom-color: color-mix(in srgb, var(--err) 70%, #000) !important;
   font-weight: 600;
 }
 
 .solfa-note-input--error:focus {
-  background: #b71c1c !important;
-  border-bottom-color: #ffffff !important;
+  background: color-mix(in srgb, var(--err) 85%, #000) !important;
+  border-bottom-color: var(--paper) !important;
 }
 
 /* ── Séparateur : ou ! ──────────────────────────────────────────────────── */
@@ -786,12 +1348,12 @@
   color: var(--solfa-ink);
   background: transparent;
   border: none;
-  border-bottom: 1px solid #d8d8d8;
+  border-bottom: 1px solid var(--paper-div);
   border-radius: 0;
   outline: none;
   text-align: center;
   transition: border-color 0.15s;
-  caret-color: #666;
+  caret-color: var(--color-accent);
 }
 
 .solfa-lyric-input::placeholder {
@@ -799,12 +1361,12 @@
 }
 
 .solfa-lyric-input:focus {
-  border-bottom-color: #555;
-  background: #f9f9f9;
+  border-bottom-color: var(--solfa-ink);
+  background: color-mix(in srgb, var(--paper-ink) 4%, transparent);
 }
 
 .solfa-lyric-input:not(:placeholder-shown) {
-  border-bottom-color: #aaa;
+  border-bottom-color: var(--paper-div);
 }
 
 /* ── Responsive ────────────────────────────────────────────────────────── */
@@ -863,9 +1425,30 @@
     margin: 12mm;
   }
 
+  /* Repointage des tokens : tout ce qui descend d'eux (chrome, feuille,
+     partition sol-fa, portée) devient noir sur blanc d'un seul coup. */
+  :root {
+    --color-bg: #fff;
+    --color-surface: #fff;
+    --color-surface-2: #fff;
+    --color-text: #000;
+    /* Les filets restent GRIS, pas noirs : `--solfa-rule` porte les séparateurs
+       de système et les bordures de chips, qui valaient #d0d0d0 avant la
+       refonte. Les passer en noir alourdirait la page imprimée. */
+    --color-divider: #c9c9c9;
+    --paper: #fff;
+    --paper-ink: #000;
+    --paper-line: #000;
+    --paper-div: #c9c9c9;
+    --canvas: #fff;
+  }
+
   html,
   body {
     background: #fff !important;
+    /* Obligatoire : sans ça, le crème de --color-text sortirait sur du blanc.
+       Ne pas retirer — c'est le garde-fou de l'export PDF. */
+    color: #000 !important;
   }
 
   /* Chrome d'édition à ne jamais imprimer : boutons +, croix des chips,
@@ -881,6 +1464,38 @@
   /* Rangée « ajouter une voix » : purement éditoriale → hors impression. */
   .solfa-addvoice-row {
     display: none !important;
+  }
+
+  /* Chrome de l'application : jamais sur le papier. Toute nouvelle classe de
+     structure `moo-*` doit être ajoutée ici en même temps qu'elle est créée. */
+  .moo-sidebar,
+  .moo-rail,
+  .moo-dock,
+  .moo-toasts {
+    display: none !important;
+  }
+
+  /* Le canvas et la feuille cèdent leur mise en page à la page imprimée :
+     ni fond, ni ombre, ni marge, ni largeur maximale. */
+  /* PIÈGE : `height:100vh` + `overflow:hidden` sur le plan de travail
+     couperait la partition à la première page. On rend la hauteur au flux. */
+  .moo-workspace {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .moo-canvas {
+    overflow: visible !important;
+    background: transparent !important;
+    padding: 0 !important;
+  }
+
+  .moo-sheet {
+    max-width: none !important;
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
   }
 
   /* ── Sol-fa ─────────────────────────────────────────────────────────── */

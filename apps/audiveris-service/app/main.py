@@ -4,17 +4,21 @@ Exposé en HTTP interne (compose :8081). omr-service appelle POST /recognize.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 
 from .merge import merge_musicxml
 
@@ -41,6 +45,51 @@ _GS_BIN = os.environ.get("GHOSTSCRIPT_BIN", "gs")
 _MERGE_PAGES = os.environ.get("AUDIVERIS_MERGE_PAGES", "1").strip().lower() not in (
     "0", "false", "no", "off", "",
 )
+
+
+# Intervalle de scrutation du sous-processus. Assez court pour que l'annulation soit
+# ressentie comme immediate, assez long pour ne rien coûter face a une JVM de 15-30 min.
+_POLL_SEC = 0.5
+
+# Delai laisse a la JVM pour sortir proprement sur SIGTERM avant le SIGKILL.
+_KILL_GRACE_SEC = 5
+
+
+class Cancelled(Exception):
+    """Le client a abandonne : on arrete le travail en cours.
+
+    Pas une sous-classe de RuntimeError : _recognize_book et l'endpoint attrapent
+    RuntimeError pour basculer en repli ou repondre 422, et une annulation ne doit
+    declencher ni l'un ni l'autre.
+    """
+
+
+def _check(cancel: Optional[threading.Event]) -> None:
+    if cancel is not None and cancel.is_set():
+        raise Cancelled("reconnaissance annulee par le client")
+
+
+def _terminate_group(proc: "subprocess.Popen") -> None:
+    """Tue le GROUPE de processus, pas seulement Audiveris.
+
+    Le groupe importe : Audiveris 5.11 lance Ghostscript en enfant pour rasteriser le
+    PDF. Un kill sur le seul PID de la JVM laisserait `gs` orphelin en train de brûler
+    du CPU — ce qui est precisement le probleme qu'on cherche a supprimer.
+    """
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            proc.wait(timeout=_KILL_GRACE_SEC)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _find_audiveris() -> str:
@@ -78,10 +127,15 @@ def _unzip_mxl(data: bytes) -> bytes:
     return zf.read(root_path)
 
 
-def _run_audiveris(input_path: Path, output_dir: Path) -> subprocess.CompletedProcess:
+def _run_audiveris(
+    input_path: Path, output_dir: Path, cancel: Optional[threading.Event] = None,
+) -> subprocess.CompletedProcess:
     """Lance Audiveris. NE lève PAS sur code ≠ 0 : Audiveris sort parfois non-nul
     tout en ayant produit un MusicXML exploitable (avertissements). L'appelant
-    décide en cherchant la sortie (cf. _audiveris_one)."""
+    décide en cherchant la sortie (cf. _audiveris_one).
+
+    ``cancel`` : levé par l'endpoint quand le client se deconnecte. On scrute au lieu
+    d'attendre bêtement, pour pouvoir tuer le groupe de processus."""
     bin_path = _find_audiveris()
     output_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
@@ -102,12 +156,38 @@ def _run_audiveris(input_path: Path, output_dir: Path) -> subprocess.CompletedPr
         str(input_path),
     ]
     env = {**os.environ, "JAVA_TOOL_OPTIONS": "-Djava.awt.headless=true"}
-    return subprocess.run(
+
+    # Sorties vers des FICHIERS et non des tubes : avec Popen + attente, un tube plein
+    # bloquerait Audiveris (il est bavard) faute d'etre vide en continu. Des fichiers
+    # suppriment ce risque et se relisent apres coup.
+    log_out = output_dir / "audiveris.out"
+    log_err = output_dir / "audiveris.err"
+    # start_new_session : le processus devient chef de son propre groupe, ce qui rend
+    # possible de tuer la JVM **et** son Ghostscript enfant d'un seul killpg.
+    # Popen en gestionnaire de contexte : garantit que le processus est attendu et ses
+    # descripteurs liberes, meme quand on sort par Cancelled ou TimeoutExpired.
+    with open(log_out, "w", encoding="utf-8") as fo, \
+            open(log_err, "w", encoding="utf-8") as fe, \
+            subprocess.Popen(  # noqa: S603
+                cmd, stdout=fo, stderr=fe, env=env, start_new_session=True,
+            ) as proc:
+        deadline = time.monotonic() + _TIMEOUT
+        while True:
+            if proc.poll() is not None:
+                break
+            if cancel is not None and cancel.is_set():
+                _terminate_group(proc)
+                raise Cancelled("reconnaissance annulee pendant le run Audiveris")
+            if time.monotonic() > deadline:
+                _terminate_group(proc)
+                raise subprocess.TimeoutExpired(cmd, _TIMEOUT)
+            time.sleep(_POLL_SEC)
+
+    return subprocess.CompletedProcess(
         cmd,
-        capture_output=True,
-        text=True,
-        timeout=_TIMEOUT,
-        env=env,
+        proc.returncode,
+        stdout=log_out.read_text(encoding="utf-8", errors="replace"),
+        stderr=log_err.read_text(encoding="utf-8", errors="replace"),
     )
 
 
@@ -126,13 +206,15 @@ def _collect_musicxml(output_dir: Path) -> bytes:
     return raw
 
 
-def _audiveris_one(input_path: Path, out_dir: Path) -> bytes:
+def _audiveris_one(
+    input_path: Path, out_dir: Path, cancel: Optional[threading.Event] = None,
+) -> bytes:
     """Un run Audiveris sur UN fichier → octets MusicXML.
 
     Tolère un code de sortie ≠ 0 : si un MusicXML a été produit, on le prend.
     Sinon on lève avec la VRAIE erreur (bruit JVM « Picked up JAVA_TOOL_OPTIONS »
     filtré, qui masquait jusqu'ici le vrai motif)."""
-    proc = _run_audiveris(input_path, out_dir)
+    proc = _run_audiveris(input_path, out_dir, cancel=cancel)
     try:
         return _collect_musicxml(out_dir)
     except RuntimeError:
@@ -169,7 +251,9 @@ def _render_pages(pdf_path: Path, out_dir: Path, dpi: Optional[int] = None) -> L
         return []
 
 
-def _recognize_book(pdf_path: Path, tmp: Path) -> tuple[bytes, dict]:
+def _recognize_book(
+    pdf_path: Path, tmp: Path, cancel: Optional[threading.Event] = None,
+) -> tuple[bytes, dict]:
     """PDF → (MusicXML, meta). Voie principale : split PDF par page + fusion
     (récupère les mesures perdues à l'assemblage du book Audiveris). Repli : book
     PDF brut entier. ``meta`` dit quelle voie a servi et pourquoi (diagnostic)."""
@@ -179,10 +263,15 @@ def _recognize_book(pdf_path: Path, tmp: Path) -> tuple[bytes, dict]:
         meta["rendered_pages"] = len(pages)
         if len(pages) > 1:
             try:
-                xmls = [
-                    _audiveris_one(pg, tmp / f"out_p{k + 1}").decode("utf-8", "replace")
-                    for k, pg in enumerate(pages)
-                ]
+                xmls = []
+                for k, pg in enumerate(pages):
+                    # Entre deux pages : le seul endroit ou l'on peut s'arreter sans
+                    # attendre la fin d'un run. Borne le gaspillage a UNE page.
+                    _check(cancel)
+                    xmls.append(
+                        _audiveris_one(pg, tmp / f"out_p{k + 1}", cancel=cancel)
+                        .decode("utf-8", "replace")
+                    )
                 meta["method"] = "per-page-merge"
                 return merge_musicxml(xmls).encode("utf-8"), meta
             except (RuntimeError, ValueError, ET.ParseError,
@@ -192,7 +281,8 @@ def _recognize_book(pdf_path: Path, tmp: Path) -> tuple[bytes, dict]:
             meta["fallback_reason"] = f"rendered_pages={len(pages)} (pypdf?)"
 
     meta["method"] = "single-raw-pdf"
-    return _audiveris_one(pdf_path, tmp / "out_raw"), meta
+    _check(cancel)
+    return _audiveris_one(pdf_path, tmp / "out_raw", cancel=cancel), meta
 
 
 @app.get("/health")
@@ -209,8 +299,18 @@ def health() -> dict:
         return {"status": "error", "detail": str(exc), "config": config}
 
 
+def _recognize_sync(
+    inp: Path, tmp_path: Path, suffix: str, cancel: threading.Event,
+) -> tuple[bytes, dict]:
+    """Pipeline bloquant, destine a tourner HORS de la boucle d'evenements."""
+    if suffix.lower() == ".pdf":
+        return _recognize_book(inp, tmp_path, cancel=cancel)
+    # Image : pas de split possible, run direct.
+    return _audiveris_one(inp, tmp_path / "out", cancel=cancel), {"method": "image-direct"}
+
+
 @app.post("/recognize")
-async def recognize(file: UploadFile = File(...)) -> dict:
+async def recognize(request: Request, file: UploadFile = File(...)) -> dict:
     """PDF ou image → MusicXML (texte XML score-partwise)."""
     data = await file.read()
     if not data:
@@ -222,13 +322,28 @@ async def recognize(file: UploadFile = File(...)) -> dict:
         tmp_path = Path(tmp)
         inp = tmp_path / f"input{suffix}"
         inp.write_bytes(data)
+
+        # Le pipeline part dans un THREAD : jusqu'ici il tournait directement dans un
+        # `async def`, donc un `subprocess.run` de 15-30 min bloquait la boucle
+        # d'evenements. Consequence mesuree : /health ne repondait plus pendant une
+        # reconnaissance, la sonde de 2 s de omr-service concluait « Audiveris
+        # indisponible », et l'appelant retentait — aggravant la charge.
+        cancel = threading.Event()
+        task = asyncio.ensure_future(
+            asyncio.to_thread(_recognize_sync, inp, tmp_path, suffix, cancel)
+        )
         try:
-            if suffix.lower() == ".pdf":
-                xml_bytes, meta = _recognize_book(inp, tmp_path)
-            else:
-                # Image : pas de split possible, run direct.
-                xml_bytes = _audiveris_one(inp, tmp_path / "out")
-                meta = {"method": "image-direct"}
+            while not task.done():
+                if await request.is_disconnected():
+                    cancel.set()
+                    break
+                await asyncio.sleep(_POLL_SEC)
+            # On attend DANS TOUS LES CAS : asyncio.to_thread n'est pas interruptible,
+            # et sortir d'ici sans attendre laisserait le thread ecrire dans un
+            # repertoire temporaire deja supprime.
+            xml_bytes, meta = await task
+        except Cancelled as exc:
+            raise HTTPException(status_code=499, detail="annule par le client") from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

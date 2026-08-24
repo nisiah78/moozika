@@ -28,14 +28,12 @@ use Symfony\Component\HttpFoundation\Response;
             name: 'scores_list',
             output: ['class' => ScoreListResponse::class],
             paginationEnabled: false,
-            read: false,
             deserialize: false,
         ),
         new Get(
             uriTemplate: '/scores/{id}',
             provider: \App\State\ScoreProvider::class,
             name: 'scores_get',
-            read: false,
             deserialize: false,
         ),
         new Post(
