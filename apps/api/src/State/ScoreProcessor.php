@@ -39,7 +39,7 @@ final class ScoreProcessor implements ProcessorInterface
 
     private function processCreate(mixed $data): ScoreResource
     {
-        if (!($data instanceof ScoreResource)) {
+        if (!$data instanceof ScoreResource) {
             throw new \InvalidArgumentException('Invalid request payload');
         }
 
@@ -66,10 +66,10 @@ final class ScoreProcessor implements ProcessorInterface
 
     private function processAddVersion(mixed $data, mixed $id): ScoreResource
     {
-        if ($id === null) {
+        if (null === $id) {
             throw new NotFoundHttpException('Partition introuvable');
         }
-        if (!($data instanceof ScoreResource)) {
+        if (!$data instanceof ScoreResource) {
             throw new \InvalidArgumentException('Invalid request payload');
         }
 
@@ -79,7 +79,7 @@ final class ScoreProcessor implements ProcessorInterface
             throw new NotFoundHttpException('Partition introuvable');
         }
 
-        if ($score === null) {
+        if (null === $score) {
             throw new NotFoundHttpException('Partition introuvable');
         }
 
@@ -110,7 +110,7 @@ final class ScoreProcessor implements ProcessorInterface
 
     private function processDelete(mixed $id): null
     {
-        if ($id === null) {
+        if (null === $id) {
             throw new NotFoundHttpException('Partition introuvable');
         }
 
@@ -120,7 +120,7 @@ final class ScoreProcessor implements ProcessorInterface
             throw new NotFoundHttpException('Partition introuvable');
         }
 
-        if ($score === null) {
+        if (null === $score) {
             throw new NotFoundHttpException('Partition introuvable');
         }
 
@@ -146,4 +146,3 @@ final class ScoreProcessor implements ProcessorInterface
         return $resource;
     }
 }
-

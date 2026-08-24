@@ -28,7 +28,7 @@ class ScoreService
     public function create(array $payload): Score
     {
         $musicxml = $payload['musicxml'] ?? '';
-        if ($musicxml === '') {
+        if ('' === $musicxml) {
             throw new \InvalidArgumentException('musicxml est requis');
         }
 
@@ -54,19 +54,19 @@ class ScoreService
     public function addVersion(Score $score, array $payload): ScoreVersion
     {
         $musicxml = $payload['musicxml'] ?? '';
-        if ($musicxml === '') {
+        if ('' === $musicxml) {
             throw new \InvalidArgumentException('musicxml est requis');
         }
 
         if (isset($payload['title'])) {
             $title = trim((string) $payload['title']);
-            if ($title !== '') {
+            if ('' !== $title) {
                 $score->setTitle($title);
             }
         }
         if (isset($payload['tonic'])) {
             $tonic = trim((string) $payload['tonic']);
-            if ($tonic !== '') {
+            if ('' !== $tonic) {
                 $score->setTonic($tonic);
             }
         }
@@ -131,7 +131,7 @@ class ScoreService
         }
 
         foreach ($keys as $key) {
-            if ($key === '') {
+            if ('' === $key) {
                 continue;
             }
             try {
@@ -159,7 +159,7 @@ class ScoreService
     public function loadLatestPayload(Score $score): ?array
     {
         $version = $this->latestVersion($score);
-        if ($version === null) {
+        if (null === $version) {
             return null;
         }
 

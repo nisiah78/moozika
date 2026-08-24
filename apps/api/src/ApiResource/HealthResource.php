@@ -26,4 +26,3 @@ final class HealthResource
 {
     public string $status = 'ok';
 }
-

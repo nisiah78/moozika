@@ -35,11 +35,11 @@ final class ConvertProcessor implements ProcessorInterface
 
     private function processModelToMusicxml(mixed $data): ConvertResource
     {
-        if (!($data instanceof ConvertResource)) {
+        if (!$data instanceof ConvertResource) {
             throw new UnprocessableEntityHttpException('JSON invalide');
         }
 
-        if (!is_array($data->models) || $data->models === []) {
+        if (!is_array($data->models) || [] === $data->models) {
             throw new UnprocessableEntityHttpException('models[] est requis');
         }
 
@@ -63,17 +63,17 @@ final class ConvertProcessor implements ProcessorInterface
 
     private function processSolfaParse(mixed $data): ConvertResource
     {
-        if (!($data instanceof ConvertResource)) {
+        if (!$data instanceof ConvertResource) {
             throw new UnprocessableEntityHttpException('JSON invalide');
         }
 
         $notation = trim((string) ($data->notation ?? ''));
-        if ($notation === '') {
+        if ('' === $notation) {
             throw new UnprocessableEntityHttpException('notation est requis');
         }
 
         $triplets = $data->triplets;
-        if ($triplets !== null && !is_array($triplets)) {
+        if (null !== $triplets && !is_array($triplets)) {
             throw new UnprocessableEntityHttpException('triplets doit être un tableau');
         }
 
@@ -86,7 +86,7 @@ final class ConvertProcessor implements ProcessorInterface
                 (string) ($data->tonic ?? 'C'),
                 (string) ($data->clef ?? 'treble'),
                 (int) $dohOctave,
-                $data->beats !== null ? (int) $data->beats : null,
+                null !== $data->beats ? (int) $data->beats : null,
                 (int) $beatType,
                 $triplets,
             );
@@ -101,4 +101,3 @@ final class ConvertProcessor implements ProcessorInterface
         return $out;
     }
 }
-

@@ -52,9 +52,7 @@ final class TranscriptionProcessor implements ProcessorInterface
 
         $file = $request->files->get('file');
         if (!$file instanceof UploadedFile) {
-            throw new UnprocessableEntityHttpException(
-                'Aucun fichier reçu. Envoyez un multipart/form-data avec un champ « file ».'
-            );
+            throw new UnprocessableEntityHttpException('Aucun fichier reçu. Envoyez un multipart/form-data avec un champ « file ».');
         }
 
         $tonic = $request->request->get('tonic');

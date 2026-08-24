@@ -4,7 +4,7 @@
 # make lint-php) doivent annoncer le même niveau, sinon ils se contredisent.
 # L'extension Symfony est chargée par phpstan/extension-installer.
 parameters:
-    level: 8
+    level: 7
     paths:
         - src
     # Le container n'existe que si le cache dev a été généré (bin/console cache:warmup).

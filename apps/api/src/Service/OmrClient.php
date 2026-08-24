@@ -77,10 +77,10 @@ class OmrClient
             'doh_octave' => $dohOctave,
             'beat_type' => $beatType,
         ];
-        if ($beats !== null) {
+        if (null !== $beats) {
             $payload['beats'] = $beats;
         }
-        if ($triplets !== null && $triplets !== []) {
+        if (null !== $triplets && [] !== $triplets) {
             $payload['triplets'] = $triplets;
         }
         $response = $this->httpClient->request('POST', rtrim($this->omrServiceUrl, '/').'/solfa/parse', [
@@ -191,10 +191,7 @@ class OmrClient
         }
 
         if (0 !== $errorStatus) {
-            throw new \RuntimeException(
-                'omr-service pdf/parse/stream: '.self::extractDetail($errorBody, $errorStatus),
-                $errorStatus
-            );
+            throw new \RuntimeException('omr-service pdf/parse/stream: '.self::extractDetail($errorBody, $errorStatus), $errorStatus);
         }
     }
 
@@ -273,7 +270,7 @@ class OmrClient
 
             $decoded = json_decode($data, true);
             if (\is_array($decoded)) {
-                /** @var array<string, mixed> $decoded */
+                /* @var array<string, mixed> $decoded */
                 $frames[] = [$event, $decoded];
             }
         }

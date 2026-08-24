@@ -62,12 +62,12 @@ final class ScoreProvider implements ProviderInterface
 
     private function provideGet(?string $id): ScoreResource
     {
-        if ($id === null) {
+        if (null === $id) {
             throw new NotFoundHttpException('Partition introuvable');
         }
 
         $score = $this->scores->get($id);
-        if ($score === null) {
+        if (null === $score) {
             throw new NotFoundHttpException('Partition introuvable');
         }
 
@@ -77,7 +77,7 @@ final class ScoreProvider implements ProviderInterface
             throw new HttpException(Response::HTTP_BAD_GATEWAY, $e->getMessage());
         }
 
-        if ($payload === null) {
+        if (null === $payload) {
             throw new NotFoundHttpException('Aucune version');
         }
 
@@ -100,4 +100,3 @@ final class ScoreProvider implements ProviderInterface
         return $resource;
     }
 }
-

@@ -148,7 +148,7 @@ class Score
     {
         $latest = null;
         foreach ($this->versions as $version) {
-            if ($latest === null || $version->getNumber() > $latest->getNumber()) {
+            if (null === $latest || $version->getNumber() > $latest->getNumber()) {
                 $latest = $version;
             }
         }

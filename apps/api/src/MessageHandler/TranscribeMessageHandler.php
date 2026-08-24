@@ -104,7 +104,14 @@ final class TranscribeMessageHandler
             $job->getSourceMime(),
             $job->getTonic(),
             function (string $event, array $data) use (
-                $job, &$lastPct, &$lastPhase, &$lastCancelCheck, &$cancelled, &$result, &$error, &$errorCode
+                $job,
+                &$lastPct,
+                &$lastPhase,
+                &$lastCancelCheck,
+                &$cancelled,
+                &$result,
+                &$error,
+                &$errorCode
             ): bool {
                 switch ($event) {
                     case 'done':
@@ -369,10 +376,7 @@ final class TranscribeMessageHandler
                 $e->getMessage()
             );
 
-            throw new UnrecoverableMessageHandlingException(
-                sprintf('Source illisible pour le job %s : %s', $job->getId()->toRfc4122(), $e->getMessage()),
-                previous: $e
-            );
+            throw new UnrecoverableMessageHandlingException(sprintf('Source illisible pour le job %s : %s', $job->getId()->toRfc4122(), $e->getMessage()), previous: $e);
         }
 
         return $source;

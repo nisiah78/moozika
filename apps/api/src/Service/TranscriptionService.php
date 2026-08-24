@@ -53,10 +53,7 @@ class TranscriptionService
         $mime = $file->getClientMimeType();
 
         if (!\in_array($mime, self::ALLOWED_MIMES, true)) {
-            throw new \InvalidArgumentException(sprintf(
-                'Type de fichier non supporté (%s). Formats acceptés : PDF, PNG, JPEG, WebP, TIFF.',
-                '' === $mime ? 'inconnu' : $mime
-            ));
+            throw new \InvalidArgumentException(sprintf('Type de fichier non supporté (%s). Formats acceptés : PDF, PNG, JPEG, WebP, TIFF.', '' === $mime ? 'inconnu' : $mime));
         }
 
         $body = (string) file_get_contents($file->getPathname());
@@ -106,10 +103,7 @@ class TranscriptionService
     public function cancel(TranscriptionJob $job): TranscriptionJob
     {
         if (!$job->isActive()) {
-            throw new \DomainException(sprintf(
-                'Ce job est déjà terminé (%s), il n\'y a plus rien à annuler.',
-                $job->getStatus()
-            ));
+            throw new \DomainException(sprintf('Ce job est déjà terminé (%s), il n\'y a plus rien à annuler.', $job->getStatus()));
         }
 
         $job->setStatus(TranscriptionJob::STATUS_CANCELLED)
@@ -149,13 +143,7 @@ class TranscriptionService
         }
 
         throw new \InvalidArgumentException(match ($file->getError()) {
-            \UPLOAD_ERR_INI_SIZE, \UPLOAD_ERR_FORM_SIZE => sprintf(
-                'Fichier trop volumineux (limite serveur : %s).',
-                (string) \ini_get('upload_max_filesize')
-            ),
-            \UPLOAD_ERR_PARTIAL => 'Envoi interrompu : le fichier n\'est arrivé qu\'en partie.',
-            \UPLOAD_ERR_NO_FILE => 'Aucun fichier reçu.',
-            default => sprintf('Échec de l\'envoi du fichier (code %d).', $file->getError()),
+            \UPLOAD_ERR_INI_SIZE, \UPLOAD_ERR_FORM_SIZE => sprintf('Fichier trop volumineux (limite serveur : %s).', (string) \ini_get('upload_max_filesize')), \UPLOAD_ERR_PARTIAL => 'Envoi interrompu : le fichier n\'est arrivé qu\'en partie.', \UPLOAD_ERR_NO_FILE => 'Aucun fichier reçu.', default => sprintf('Échec de l\'envoi du fichier (code %d).', $file->getError()),
         });
     }
 

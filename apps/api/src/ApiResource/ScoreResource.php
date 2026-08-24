@@ -10,7 +10,6 @@ use ApiPlatform\Metadata\Delete;
 use ApiPlatform\Metadata\Get;
 use ApiPlatform\Metadata\GetCollection;
 use ApiPlatform\Metadata\Post;
-use ApiPlatform\Metadata\Operation;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -115,4 +114,3 @@ final class ScoreListItem
     public ?string $updatedAt = null;
     public ?string $createdAt = null;
 }
-

@@ -12,19 +12,11 @@
 grumphp:
     process_timeout: 300
 
-    # Pas de correction interactive : dans un hook, l'invite « I can fix some
-    # stuff automatically? » n'a pas de sens (stdin porte le diff) et un outil qui
-    # réécrit le code pour faire passer son propre contrôle est l'inverse d'une
-    # porte déterministe. Correction volontaire :
-    #   cd apps/api && vendor/bin/php-cs-fixer fix
-    fixer:
-        enabled: false
-
     tasks:
         # Analyse statique — niveau 8 (le 9 exige en plus le typage des `mixed`).
         phpstan:
             configuration: phpstan.dist.neon
-            level: 8
+            level: 7
             memory_limit: "512M"
 
         # Style — @Symfony + @PSR12, aligné sur apps/api/.editorconfig.

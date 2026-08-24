@@ -18,4 +18,3 @@ final class HealthProvider implements ProviderInterface
         return new HealthResource();
     }
 }
-
