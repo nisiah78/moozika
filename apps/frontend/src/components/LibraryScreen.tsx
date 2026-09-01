@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { deleteScore, listScores, type ScoreListItem } from "@/lib/scoresApi";
@@ -10,6 +10,8 @@ import { useTranscriptions } from "@/components/TranscriptionsProvider";
 import { useToasts } from "@/components/Toasts";
 import { NOTATION_LABEL, ROUTES, type Notation } from "@/lib/navigation";
 import { IconPlus, IconRefresh, IconSearch, IconTrash } from "@/components/icons";
+import { NewScoreMenu } from "@/components/NewScoreMenu";
+import { CreateScoreDrawer } from "@/components/CreateScoreDrawer";
 
 /**
  * Écran bibliothèque.
@@ -32,6 +34,13 @@ export function LibraryScreen({ notation }: { notation: Notation }) {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [newScoreMenu, setNewScoreMenu] = useState<{ x: number; y: number } | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  const openNewScoreMenu = useCallback((e: MouseEvent<HTMLButtonElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    setNewScoreMenu({ x: r.left, y: r.bottom + 6 });
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,10 +116,10 @@ export function LibraryScreen({ notation }: { notation: Notation }) {
               Œuvres
             </label>
           </div>
-          <Link href={ROUTES.import()} className="moo-btn moo-btn--primary gap-2">
+          <button type="button" onClick={openNewScoreMenu} className="moo-btn moo-btn--primary gap-2">
             <IconPlus size={16} />
-            Importer
-          </Link>
+            Nouvelle partition
+          </button>
         </div>
       </header>
 
@@ -166,19 +175,23 @@ export function LibraryScreen({ notation }: { notation: Notation }) {
                    partitions de l'autre notation existent bien. */
                 `Vos ${items.length} partitions sont rangées dans l'autre notation.`}
           </p>
-          <Link
-            href={items.length === 0 ? ROUTES.import() : ROUTES.library(otherNotation(notation))}
-            className="moo-btn moo-btn--primary mt-5 gap-2"
-          >
-            {items.length === 0 ? (
-              <>
-                <IconPlus size={16} />
-                Importer une partition
-              </>
-            ) : (
-              `Voir les partitions ${NOTATION_LABEL[otherNotation(notation)].toLowerCase()}`
-            )}
-          </Link>
+          {items.length === 0 ? (
+            <button
+              type="button"
+              onClick={openNewScoreMenu}
+              className="moo-btn moo-btn--primary mt-5 gap-2"
+            >
+              <IconPlus size={16} />
+              Nouvelle partition
+            </button>
+          ) : (
+            <Link
+              href={ROUTES.library(otherNotation(notation))}
+              className="moo-btn moo-btn--primary mt-5 gap-2"
+            >
+              Voir les partitions {NOTATION_LABEL[otherNotation(notation)].toLowerCase()}
+            </Link>
+          )}
         </div>
       ) : !loading && shown.length === 0 ? (
         <div className="px-[34px] py-16 text-center">
@@ -201,6 +214,17 @@ export function LibraryScreen({ notation }: { notation: Notation }) {
           ))}
         </div>
       )}
+
+      {newScoreMenu && (
+        <NewScoreMenu
+          x={newScoreMenu.x}
+          y={newScoreMenu.y}
+          onImport={() => router.push(ROUTES.import())}
+          onCreate={() => setCreateOpen(true)}
+          onClose={() => setNewScoreMenu(null)}
+        />
+      )}
+      {createOpen && <CreateScoreDrawer onClose={() => setCreateOpen(false)} />}
     </div>
   );
 }

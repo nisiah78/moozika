@@ -289,7 +289,8 @@ def staff_pdf_to_score(
     if not result.models:
         raise StaffRecognizeError("MusicXML Audiveris sans voix exploitable")
 
-    models = consolidate_omr_voices(result.models)
+    warnings = list(result.warnings)
+    models = consolidate_omr_voices(result.models, warnings=warnings)
     # Mètre d'OUVERTURE affiché = celui de la 1re mesure (model.beats, posé par
     # from_musicxml), PAS le prédominant : sur une pièce à mètre variable (jubilate
     # ouvre en 10/8 puis 6/8 puis 4/4), le prédominant 4/4 afficherait à tort 4/4
@@ -303,7 +304,6 @@ def staff_pdf_to_score(
     # MusicXML régénéré depuis les voix SATB nettoyées (et non le brut Audiveris)
     # -> l'aperçu OSMD colle au sol-fa affiché (mètre, clefs, voix, titre corrigés).
     clean_musicxml = to_musicxml_multi(models, title=display_title)
-    warnings = list(result.warnings)
     if len(models[0].measures) < 70:
         warnings.append(
             f"[omr] {len(models[0].measures)} mesures reconnues — "

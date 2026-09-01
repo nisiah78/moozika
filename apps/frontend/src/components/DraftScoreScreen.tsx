@@ -28,5 +28,10 @@ export function DraftScoreScreen() {
     );
   }
 
-  return <ScoreWorkspace initialScore={draft} initialScoreId={null} initialMode="solfa" />;
+  // Un import portée (Audiveris) s'ouvre en vue Partition : c'est elle qui
+  // porte les outils de correction (octave de voix, renommage) dont un OMR de
+  // portée a le plus besoin — pas la vue sol-fa.
+  const initialMode = draft.source === "audiveris" ? "score" : "solfa";
+
+  return <ScoreWorkspace initialScore={draft} initialScoreId={null} initialMode={initialMode} />;
 }

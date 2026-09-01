@@ -53,6 +53,73 @@ def _count_sung_notes(root: ET.Element) -> int:
     )
 
 
+def _count_pitched_notes_incl_chords(root: ET.Element) -> int:
+    """Notes porteuses de hauteur (accords inclus), silences/agréments exclus —
+    utilisé pour vérifier qu'aucune hauteur d'accord n'est perdue lors de la
+    redistribution locale d'un accord condensé (contrairement à
+    ``_count_sung_notes``, qui exclut délibérément les notes <chord> et ne
+    convient donc pas à ce test-là : après redistribution, une des deux notes
+    de l'accord perd son marqueur <chord>, ce qui fausserait une comparaison
+    avant/après avec le compteur historique)."""
+    return sum(
+        1
+        for p in root.findall("part")
+        for m in p.findall("measure")
+        for n in m.findall("note")
+        if n.find("rest") is None and n.find("grace") is None and n.find("pitch") is not None
+    )
+
+
+def _condensed_page_final_chord(nmeasures: int, second_voice_rest: bool = False) -> str:
+    """Comme ``_condensed_page``, mais la DERNIÈRE mesure est un accord collé
+    sur voice="1" (racine F4 + <chord/> A4, ronde). voice="2" est soit ABSENTE
+    (reproduit le bug confirmé : accord final sans hampe, Audiveris ne sépare
+    plus les 2 voix), soit porte un <rest/> explicite (``second_voice_rest`` —
+    pour vérifier qu'un silence déjà noté n'est jamais écrasé)."""
+    vocal = ""
+    for j in range(nmeasures - 1):
+        vocal += (
+            f'<measure number="{j + 1}">'
+            "<attributes><divisions>1</divisions></attributes>"
+            "<note><pitch><step>E</step><octave>5</octave></pitch>"
+            "<duration>4</duration><voice>1</voice></note>"
+            "<backup><duration>4</duration></backup>"
+            "<note><pitch><step>C</step><octave>4</octave></pitch>"
+            "<duration>4</duration><voice>2</voice></note>"
+            "</measure>"
+        )
+    second_voice_note = (
+        "<note><rest/><duration>4</duration><voice>2</voice></note>"
+        if second_voice_rest else ""
+    )
+    vocal += (
+        f'<measure number="{nmeasures}">'
+        "<attributes><divisions>1</divisions></attributes>"
+        '<note><pitch><step>F</step><octave>4</octave></pitch>'
+        "<duration>4</duration><voice>1</voice></note>"
+        '<note><pitch><step>A</step><octave>4</octave></pitch><chord/>'
+        "<duration>4</duration><voice>1</voice></note>"
+        f"{second_voice_note}"
+        "</measure>"
+    )
+    piano = "".join(
+        f'<measure number="{j + 1}">'
+        "<attributes><divisions>1</divisions><staves>2</staves></attributes>"
+        "<note><pitch><step>G</step><octave>3</octave></pitch>"
+        "<duration>4</duration><voice>1</voice><staff>1</staff></note>"
+        "</measure>"
+        for j in range(nmeasures)
+    )
+    part_list = (
+        '<score-part id="P1"><part-name>Voix</part-name></score-part>'
+        '<score-part id="P2"><part-name>Piano</part-name></score-part>'
+    )
+    return (
+        '<score-partwise version="4.0"><part-list>' + part_list + "</part-list>"
+        f'<part id="P1">{vocal}</part><part id="P2">{piano}</part></score-partwise>'
+    )
+
+
 def _page(nparts: int, nmeasures: int, xmlns: bool = False) -> str:
     """Page MusicXML minimale : nparts parts, chacune nmeasures mesures (num. 1..N)."""
     ns = ' xmlns="http://www.musicxml.org/ns"' if xmlns else ""
@@ -125,6 +192,90 @@ class TestMergeMusicXml(unittest.TestCase):
         # Une part mono-voix ne doit JAMAIS être scindée (pas de faux divisi).
         root = ET.fromstring(merge_musicxml([_page(3, 5)]))
         self.assertEqual(len(root.findall("part")), 3)
+
+    def test_collapsed_final_chord_recovered(self):
+        # Reproduit le bug confirmé sur une vraie partition : la dernière
+        # mesure est une ronde (donc sans hampe) rendue en accord sur UNE
+        # seule voix (F4 racine + A4 <chord/>, voice="1") ; voice="2" est
+        # absente de cette mesure précise. Les 2 clusters doivent chacun
+        # récupérer une hauteur, aigu → cluster du haut (déjà établi E5>C4
+        # sur les mesures précédentes).
+        root = ET.fromstring(merge_musicxml([_condensed_page_final_chord(5)]))
+        parts = root.findall("part")
+        self.assertEqual(len(parts), 3)  # 2 voix dé-condensées + piano
+        last0 = parts[0].findall("measure")[-1]
+        last1 = parts[1].findall("measure")[-1]
+        notes0 = [n for n in last0.findall("note") if n.find("pitch") is not None]
+        notes1 = [n for n in last1.findall("note") if n.find("pitch") is not None]
+        self.assertEqual(len(notes0), 1)
+        self.assertEqual(len(notes1), 1)
+        self.assertEqual((notes0[0].findtext("pitch/step"), notes0[0].findtext("pitch/octave")),
+                          ("A", "4"))
+        self.assertEqual((notes1[0].findtext("pitch/step"), notes1[0].findtext("pitch/octave")),
+                          ("F", "4"))
+
+    def test_collapsed_final_chord_preserves_note_count(self):
+        # Aucune hauteur perdue : le compteur historique (_count_sung_notes)
+        # exclut les notes <chord> par construction, donc inadapté ici (une des
+        # 2 notes de l'accord perd son marqueur <chord> après redistribution) —
+        # on utilise le compteur dédié qui inclut les accords des deux côtés.
+        src = ET.fromstring(_condensed_page_final_chord(5))
+        merged = ET.fromstring(merge_musicxml([_condensed_page_final_chord(5)]))
+        self.assertEqual(_count_pitched_notes_incl_chords(src), _count_pitched_notes_incl_chords(merged))
+
+    def test_condensed_rest_not_overridden_by_sibling_chord(self):
+        # Un <rest> déjà noté explicitement dans le cluster voisin est traité
+        # comme un silence INTENTIONNEL : le mécanisme ne doit jamais l'écraser,
+        # et l'accord de l'autre cluster doit rester intact (mécanisme inerte).
+        root = ET.fromstring(
+            merge_musicxml([_condensed_page_final_chord(5, second_voice_rest=True)])
+        )
+        parts = root.findall("part")
+        last0 = parts[0].findall("measure")[-1]
+        last1 = parts[1].findall("measure")[-1]
+        notes0 = [n for n in last0.findall("note") if n.find("pitch") is not None]
+        self.assertEqual(len(notes0), 2)  # accord F4+A4 intact, non redistribué
+        self.assertIsNotNone(last1.find("note/rest"))  # silence noté préservé
+
+    def test_condensed_chord_with_other_content_not_split(self):
+        # Aucun cluster n'est vide (accord sur voice=1 ET note propre sur
+        # voice=2) : le mécanisme ne doit RIEN changer, ce n'est pas un
+        # séparateur d'accords général.
+        normal_measures = "".join(
+            f'<measure number="{j + 1}"><attributes><divisions>1</divisions></attributes>'
+            "<note><pitch><step>E</step><octave>5</octave></pitch>"
+            "<duration>4</duration><voice>1</voice></note>"
+            "<backup><duration>4</duration></backup>"
+            "<note><pitch><step>C</step><octave>4</octave></pitch>"
+            "<duration>4</duration><voice>2</voice></note></measure>"
+            for j in range(4)  # dépasse le seuil "substantiel" des 2 voix
+        )
+        final_measure = (
+            '<measure number="5"><attributes><divisions>1</divisions></attributes>'
+            "<note><pitch><step>F</step><octave>4</octave></pitch>"
+            "<duration>4</duration><voice>1</voice></note>"
+            '<note><pitch><step>A</step><octave>4</octave></pitch><chord/>'
+            "<duration>4</duration><voice>1</voice></note>"
+            "<backup><duration>4</duration></backup>"
+            "<note><pitch><step>D</step><octave>4</octave></pitch>"
+            "<duration>4</duration><voice>2</voice></note></measure>"
+        )
+        page = (
+            '<score-partwise version="4.0"><part-list>'
+            '<score-part id="P1"><part-name>Voix</part-name></score-part>'
+            f'</part-list><part id="P1">{normal_measures}{final_measure}</part>'
+            "</score-partwise>"
+        )
+        root = ET.fromstring(merge_musicxml([page]))
+        parts = root.findall("part")
+        self.assertEqual(len(parts), 2)
+        last0 = parts[0].findall("measure")[-1]
+        last1 = parts[1].findall("measure")[-1]
+        notes0 = [n for n in last0.findall("note") if n.find("pitch") is not None]
+        notes1 = [n for n in last1.findall("note") if n.find("pitch") is not None]
+        self.assertEqual(len(notes0), 2)  # accord F4+A4 intact
+        self.assertEqual(len(notes1), 1)
+        self.assertEqual(notes1[0].findtext("pitch/step"), "D")
 
     def test_condensed_across_pages_stable_slots(self):
         # Page condensée (S+A) puis page en 2 voix déjà séparées : les slots

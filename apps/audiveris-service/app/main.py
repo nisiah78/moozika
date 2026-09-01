@@ -29,6 +29,10 @@ _PDF_RESOLUTION_OPT = "org.audiveris.omr.image.ImageLoading.pdfResolution=450"
 _DEFAULT_QUALITY_OPT = "org.audiveris.omr.sheet.Profiles.defaultQuality=Poor"
 _DISCONNECTED_BRACE_PART_OPT = "org.audiveris.omr.sheet.ProcessingSwitches.disconnectedBracedParts=true"
 _BOOK_FOLDERS_OPT = "org.audiveris.omr.sheet.BookManager.useSeparateBookFolders=false"
+# Explicite plutôt qu'implicite : "eng" est déjà la valeur par défaut d'Audiveris,
+# mais la dépendance réelle de l'OCR est le fichier de langue legacy+LSTM installé
+# au build (cf. Dockerfile) — sans lui, ce réglage ne change rien.
+_LANGUAGE_OPT = "org.audiveris.omr.text.Language.defaultSpecification=eng"
 _TIMEOUT = int(os.environ.get("AUDIVERIS_TIMEOUT", "600"))
 
 # Ghostscript : dépendance de rendu PDF d'Audiveris 5.11 lui-même (vérifiée dans
@@ -152,6 +156,8 @@ def _run_audiveris(
         _DISCONNECTED_BRACE_PART_OPT,
         "-constant",
         _BOOK_FOLDERS_OPT,
+        "-constant",
+        _LANGUAGE_OPT,
         "--",
         str(input_path),
     ]

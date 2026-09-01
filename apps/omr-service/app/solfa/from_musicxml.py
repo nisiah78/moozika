@@ -70,6 +70,14 @@ def _looks_like_piano(part_name: str) -> bool:
     return any(h in base for h in _PIANO_HINTS)
 
 
+def _is_tenor_name(part_name: str) -> bool:
+    """Vrai si le nom de la voix (LU sur la partition via l'OCR Audiveris, pas
+    une estimation) désigne explicitement un ténor. Sert la convention chorale
+    déterministe : ténor en clé de Sol standard = sonne 1 octave sous l'écrit."""
+    base = part_name.split(" v")[0].strip().lower()
+    return "tenor" in base or "ténor" in base
+
+
 def _capacity_to_meter(cap: int, prefer_eighth: bool) -> Tuple[int, int]:
     """Capacité (divisions) -> (beats, beat_type). À capacité égale, le
     dénominateur déclaré tranche : /8 -> mètre en croches, sinon en noires."""
@@ -712,6 +720,7 @@ class _Reader:
         time_sig: Optional[Tuple[int, int]] = None
         implicit_time_sig = self._first_explicit_time_sig(part_el)
         clef_by_staff: dict = {}
+        clef_octave_change_by_staff: dict = {}
         seen_key = False
         seen_time = False
         # Tonalité d'ouverture (en-tête du modèle) vs clé effective par mesure :
@@ -802,6 +811,12 @@ class _Reader:
                         st = int(clef_el.get("number", "1"))
                         sign = (clef_el.findtext("sign") or "G").strip().upper()
                         clef_by_staff[st] = _CLEF_SIGN.get(sign, "treble")
+                        oc = clef_el.findtext("clef-octave-change")
+                        if oc:
+                            try:
+                                clef_octave_change_by_staff[st] = int(oc)
+                            except ValueError:
+                                pass
                     tr = child.find("transpose")
                     if tr is not None and int(tr.findtext("chromatic", "0")) != 0:
                         self._warn("transpose", "instrument transpositeur : épellation "
@@ -977,8 +992,8 @@ class _Reader:
 
         return self._build_models(
             streams, measures_meta, default_meter,
-            initial_fifths, initial_mode, clef_by_staff, part_name,
-            staff_count, midi_program, has_lyric,
+            initial_fifths, initial_mode, clef_by_staff, clef_octave_change_by_staff,
+            part_name, staff_count, midi_program, has_lyric,
         )
 
     def _handle_note(self, note_el, cursor, last_onset, per_stream_raw, rescale) -> None:
@@ -1111,7 +1126,7 @@ class _Reader:
         return out
 
     def _build_models(self, streams, measures_meta, default_meter, fifths, mode,
-                      clef_by_staff, part_name,
+                      clef_by_staff, clef_octave_change_by_staff, part_name,
                       staff_count=1, midi_program=None, has_lyric=False):
         tonic = tonic_from_fifths(fifths)
         multi = len(streams) > 1
@@ -1153,6 +1168,29 @@ class _Reader:
         for (staff, voice) in sorted(streams):
             measures_raw = streams[(staff, voice)]
             clef = clef_by_staff.get(staff, "treble")
+            # Convention chorale DÉTERMINISTE (pas une estimation) : un ténor
+            # noté en clé de Sol standard sonne 1 octave sous l'écrit. Appliquée
+            # UNIQUEMENT quand le nom de voix (donnée LUE via l'OCR Audiveris,
+            # pas devinée) désigne explicitement un ténor, ET que la partition
+            # ne porte pas déjà un <clef-octave-change> explicite (Audiveris a
+            # alors déjà résolu l'octave sonnante — reproposer un décalage ferait
+            # une double correction). Sur les HAUTEURS BRUTES, AVANT le choix du
+            # registre du doh et l'épellation sol-fa : sinon la syllabe/marque
+            # d'octave affichée resterait calculée sur l'ancien registre et ne
+            # correspondrait plus à la hauteur réellement stockée (cf. mémoire
+            # [[playback-pitch-authority]]). Cf. [[part-name]] : sans OCR
+            # fonctionnel, part_name reste générique et ceci ne matche jamais.
+            if clef == "treble" and clef_octave_change_by_staff.get(staff, 0) == 0 \
+                    and _is_tenor_name(part_name):
+                for raws in measures_raw:
+                    for r in raws:
+                        r.heights = [(s, a, o - 1) for s, a, o in r.heights]
+                self._warn(
+                    "octave-tenor",
+                    f"voix « {part_name} » : octave corrigée automatiquement "
+                    "(-1) — convention chorale pour un ténor noté en clé de Sol "
+                    "(nom lu sur la partition, pas une estimation)."
+                )
             doh_octave = self._pick_doh_octave(measures_raw, tonic, fifths)
             measures = []
             # Mètre courant, initialisé à la signature déclarée (pred_sig, = le
@@ -1647,12 +1685,31 @@ class _Reader:
                 or getattr(m, "midi_program", None) in _KEYBOARD_MIDI
             )
         vocal = [m for m in models if _vocal(m)]
-        generic = all(m.part_name.split(" v")[0] in ("", "Voix", "P1", "P2", "P3", "P4")
-                      or m.part_name.startswith("Voix") for m in vocal)
+        # "Voice" (anglais) est le PLACEHOLDER PROPRE À AUDIVERIS pour une part
+        # sans titre lisible dans la partition (constaté sur du MusicXML réel :
+        # <part-name>Voice</part-name>, pas balise absente) — distinct de "Voix"
+        # (notre propre repli quand la balise <part-name> manque totalement,
+        # cf. ``_read_part_list``). Sans ce cas, l'estimation SATB silencieuse
+        # ci-dessous ne se détecte jamais sur une vraie sortie Audiveris.
+        def _is_generic(name: str) -> bool:
+            base = name.split(" v")[0].strip().lower()
+            low = name.strip().lower()
+            return base in ("", "voix", "voice", "p1", "p2", "p3", "p4") or low.startswith(
+                ("voix", "voice")
+            )
+        generic = all(_is_generic(m.part_name) for m in vocal)
         if len(vocal) == 4 and generic:
             order = sorted(vocal, key=self._median_height, reverse=True)
             for m, nm in zip(order, ("Soprano", "Alto", "Tenor", "Bass")):
                 m.part_name = nm
+            self._warn(
+                "part-name",
+                "noms de voix non fournis par Audiveris — attribution "
+                "Soprano/Alto/Tenor/Bass par tessiture (estimation, pas une "
+                "donnée lue). Une voix de ténor notée en clé de Sol classique "
+                "peut sonner une octave plus bas que noté : vérifiez au son, "
+                "corrigez via le bouton d'octave de la vue Partition si besoin."
+            )
 
     @staticmethod
     def _median_height(model: ScoreModel) -> float:

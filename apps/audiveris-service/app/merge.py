@@ -137,8 +137,15 @@ def _part_meta(root: ET.Element) -> List[dict]:
 # vs S/A séparés en divisi). On sépare donc, AVANT le mapping, toute part vocale
 # à ≥2 voix substantielles en autant de parts mono-voix (triées aigu→grave),
 # pour que slot0=Soprano, slot1=Alto… restent stables sur toute la partition.
-# Le cas « Ténor+Basse en ACCORDS sur 1 portée » reste géré en aval par
-# from_musicxml._split_chord_streams (phase 2).
+# Le cas « Ténor+Basse en ACCORDS sur 1 portée » de façon MAJORITAIRE (chœur
+# jamais réellement séparé par Audiveris) reste géré en aval par
+# from_musicxml._split_chord_streams (phase 2) — CE garde-fou-là exige une
+# fraction d'accords substantielle sur l'ENSEMBLE de la voix et décline sciemment
+# dès qu'une voix sœur substantielle existe déjà sur la portée. Il ne couvre donc
+# PAS le cas d'une part déjà dé-condensée en 2 voix stables sur la majorité de la
+# partition, où UNE SEULE mesure (typiquement l'accord final, en rondes SANS
+# hampe donc sans signal de séparation) regresse en un unique <voice> accordé :
+# cf. _redistribute_collapsed_chord ci-dessous, qui comble précisément ce vide.
 
 def _voice_note_counts(measures: List[ET.Element]) -> Counter:
     """Notes chantées (hors silence, accord, agrément) par <voice>."""
@@ -206,6 +213,107 @@ def _condensed_clusters(measures: List[ET.Element]) -> Optional[List[List[str]]]
     return [clusters[v] for v in substantial]
 
 
+def _note_semitone(n: ET.Element) -> Optional[int]:
+    """Hauteur en demi-tons d'une note, ou None si silence/agrément/hauteur
+    non exploitable (mêmes règles que ``_median_pitch``/``_voice_median_pitch``,
+    factorisées ici pour le filet de sécurité ci-dessous)."""
+    if n.find("rest") is not None or n.find("grace") is not None:
+        return None
+    p = n.find("pitch")
+    if p is None:
+        return None
+    step = (p.findtext("step") or "C").strip().upper()
+    try:
+        octave = int(p.findtext("octave", "4") or "4")
+        alter = int(float(p.findtext("alter", "0") or "0"))
+    except ValueError:
+        return None
+    return octave * 12 + _STEP.get(step, 0) + alter
+
+
+def _chord_stacks(notes: List[ET.Element]) -> List[List[ET.Element]]:
+    """Découpe une liste de <note> d'UNE MÊME voix (ordre document) en piles
+    d'accord : chaque pile = [racine (sans <chord>), notes <chord/> qui suivent
+    immédiatement]. Une pile de longueur 1 = note/silence isolé."""
+    stacks: List[List[ET.Element]] = []
+    for n in notes:
+        if n.find("chord") is None or not stacks:
+            stacks.append([n])
+        else:
+            stacks[-1].append(n)
+    return stacks
+
+
+def _redistribute_collapsed_chord(
+    measure_el: ET.Element, clusters: List[List[str]]
+) -> ET.Element:
+    """Filet de sécurité LOCAL, une seule mesure à la fois : si Audiveris a
+    rendu un accord (notes SANS hampe → aucun signal de séparation de voix,
+    typiquement l'accord final en rondes) sous UN SEUL <voice>, alors qu'un
+    cluster déjà établi ailleurs dans la partition n'a AUCUNE note dans cette
+    mesure précise, redistribue les hauteurs de l'accord aigu→slot du haut vers
+    les clusters vides (même convention que ``_median_pitch`` ailleurs dans ce
+    module). Renvoie ``measure_el`` INCHANGÉ dans tous les autres cas — ne
+    touche jamais au seuil global de ``_condensed_clusters`` : ce n'est jamais
+    un séparateur d'accords général, seulement un filet pour l'unique situation
+    où l'alternative est une perte de note certaine (mesure totalement vide)."""
+    notes_by_voice: Dict[str, List[ET.Element]] = {}
+    for n in measure_el.findall("note"):
+        notes_by_voice.setdefault(n.findtext("voice") or "1", []).append(n)
+
+    empty_idxs = [
+        k for k, cluster in enumerate(clusters)
+        if not any(v in notes_by_voice for v in cluster)
+    ]
+    if not empty_idxs:
+        return measure_el  # aucun cluster vide : rien à récupérer (accord
+        # normal ou harmonie doublée légitimement) — cas le plus fréquent,
+        # coût nul.
+
+    for donor_k, cluster in enumerate(clusters):
+        if donor_k in empty_idxs:
+            continue
+        for v in cluster:
+            notes = notes_by_voice.get(v)
+            if not notes:
+                continue
+            for stack in _chord_stacks(notes):
+                if len(stack) != len(notes):
+                    continue  # l'accord n'est pas la TOTALITÉ du contenu de
+                    # cette voix pour cette mesure → migrer casserait le timing
+                    # (pas de <backup> pour repositionner les autres notes).
+                heights = [_note_semitone(n) for n in stack]
+                if any(h is None for h in heights) or len(set(heights)) != len(heights):
+                    continue  # hauteur non lisible, ou doublon/unisson dans
+                    # l'accord (ordre <chord> ambigu) : laissé tel quel.
+                if len(heights) - 1 != len(empty_idxs):
+                    continue  # correspondance non univoque accord↔slots vides
+                target_slots = sorted([donor_k] + empty_idxs)
+                desc_pitches = sorted(set(heights), reverse=True)
+                nm = copy.deepcopy(measure_el)
+                nm_by_voice: Dict[str, List[ET.Element]] = {}
+                for n in nm.findall("note"):
+                    nm_by_voice.setdefault(n.findtext("voice") or "1", []).append(n)
+                nm_stack = next(
+                    (s for s in _chord_stacks(nm_by_voice.get(v, [])) if len(s) == len(stack)),
+                    None,
+                )
+                if nm_stack is None:
+                    continue
+                for slot, pitch_val in zip(target_slots, desc_pitches):
+                    match = next(n for n in nm_stack if _note_semitone(n) == pitch_val)
+                    chord_el = match.find("chord")
+                    if chord_el is not None:
+                        match.remove(chord_el)
+                    if slot != donor_k:
+                        ve = match.find("voice")
+                        if ve is None:
+                            ve = ET.SubElement(match, "voice")
+                        ve.text = clusters[slot][0]
+                return nm
+    return measure_el
+
+
 def _rebuild_measure(measure_el: ET.Element, voices: List[str]) -> ET.Element:
     """Reconstruit une mesure ne gardant que ``voices`` (ordre = voice 1, 2…),
     avec des <backup> propres entre voix. Conserve les enfants partagés
@@ -263,10 +371,11 @@ def _decondense_root(root: ET.Element) -> None:
         measures = part.findall("measure")
         clusters = None if meta["accomp"] else _condensed_clusters(measures)
         if clusters and len(clusters) >= 2:
+            adjusted = [_redistribute_collapsed_chord(m, clusters) for m in measures]
             for k, cluster in enumerate(clusters):
                 nid = f"{pid}_v{k + 1}"
                 np = ET.Element("part", {"id": nid})
-                for m in measures:
+                for m in adjusted:
                     np.append(_rebuild_measure(m, cluster))
                 sp = sp_by_id.get(pid)
                 nsp = copy.deepcopy(sp) if sp is not None else ET.Element(

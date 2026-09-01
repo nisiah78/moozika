@@ -307,6 +307,15 @@ def _measure_to_text(
 # API publique
 # ---------------------------------------------------------------------------
 
+def _measure_lyric_text(measure: Measure) -> str:
+    """Ligne de paroles d'UNE mesure, même découpage en temps que sa notation
+    (``Measure.beat_lyrics``, rempli par ``parser._attach_lyrics_to_notes`` côté
+    saisie texte/PDF sol-fa). Vide si la mesure n'en porte pas."""
+    if not measure.beat_lyrics:
+        return ""
+    return " : ".join(w or "" for w in measure.beat_lyrics)
+
+
 def _measure_directive_prefix(measure: Measure) -> str:
     """Préfixes d'annotation au début d'une mesure (affichage / artefact texte).
 
@@ -339,7 +348,8 @@ def _measure_directive_prefix(measure: Measure) -> str:
 
 
 def to_solfa(
-    model: ScoreModel, include_header: bool = False, min_cell: int = 1
+    model: ScoreModel, include_header: bool = False, min_cell: int = 1,
+    include_lyrics: bool = False,
 ) -> str:
     """ScoreModel → texte sol-fa tonique canonique.
 
@@ -356,13 +366,19 @@ def to_solfa(
                       jitter des durées OMR et alléger le rendu (moins de cellules
                       par temps). Lossy : les attaques plus courtes qu'une croche
                       fusionnent.
+    include_lyrics  : si True et qu'au moins une mesure porte des paroles
+                      (``Measure.beat_lyrics``), ajoute une ligne de paroles sous
+                      la notation (même découpage ``|``/``:``, cf. §7 Porté et
+                      système de solfa-format.md). Comme ``include_header``,
+                      **pas** parseable par `parse_solfa` tel quel — affichage
+                      uniquement.
 
     Sorties
     -------
     Texte sol-fa canonique séparé par `` : `` (temps) et `` | `` (mesures),
     subdivisions par `.` uniquement. Re-parseable via ``parse_solfa(text,
     tonic=model.tonic, beats=model.beats, beat_type=model.beat_type)``
-    (à résolution complète, min_cell=1).
+    (à résolution complète, min_cell=1, sans ``include_header``/``include_lyrics``).
     """
     base_meter = classify_meter(model.beats, model.beat_type)
     # Quand le parseur a mis divisions=12 (triolets), la grille texte doit
@@ -417,10 +433,16 @@ def to_solfa(
         )
     notation = " | ".join(measure_texts)
 
+    out = notation
+    if include_lyrics:
+        lyric_texts = [_measure_lyric_text(m) for m in model.measures]
+        if any(t.strip(" :") for t in lyric_texts):
+            out += "\n" + " | ".join(lyric_texts)
+
     if not include_header:
-        return notation
+        return out
 
     header = f"doh = {tonic}  {model.beats}/{model.beat_type}"
     if model.tempo:
         header += f"  = {model.tempo}"
-    return header + "\n" + notation
+    return header + "\n" + out

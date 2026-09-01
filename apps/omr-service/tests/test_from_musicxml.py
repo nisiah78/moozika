@@ -84,6 +84,63 @@ class TestSatb(unittest.TestCase):
         self.assertEqual(len(models), 2)
 
 
+def _single_voice_score(part_name: str, clef_extra: str = "") -> str:
+    """Partie unique, clé de Sol (+ ``clef_extra`` ex. clef-octave-change),
+    4 notes G4 quarter — pour tester la convention d'octave ténor."""
+    body = "".join(_note("G", 4, 4, "quarter") for _ in range(4))
+    return (
+        '<score-partwise version="4.0">'
+        f'<part-list><score-part id="P1"><part-name>{part_name}</part-name></score-part></part-list>'
+        '<part id="P1"><measure number="1"><attributes><divisions>4</divisions>'
+        "<key><fifths>0</fifths></key>"
+        "<time><beats>4</beats><beat-type>4</beat-type></time>"
+        f"<clef><sign>G</sign><line>2</line>{clef_extra}</clef>"
+        f"</attributes>{body}</measure></part></score-partwise>"
+    )
+
+
+class TestTenorOctaveConvention(unittest.TestCase):
+    """Convention chorale DÉTERMINISTE : un ténor noté en clé de Sol standard
+    (sans <clef-octave-change> déjà présent) sonne 1 octave sous l'écrit. La
+    correction n'est appliquée QUE quand le nom de voix la désigne EXPLICITEMENT
+    (donnée lue, ex. OCR Audiveris) — jamais par estimation de tessiture."""
+
+    def test_tenor_name_shifts_octave_down(self):
+        res = read_musicxml(_single_voice_score("Tenor2"))
+        octaves = [n.pitch.octave for n in res.models[0].measures[0].notes]
+        self.assertEqual(octaves, [3, 3, 3, 3])  # G4 écrit -> G3 sonnant
+        self.assertTrue(any("octave-tenor" in w for w in res.warnings))
+
+    def test_accented_tenor_name_also_matches(self):
+        res = read_musicxml(_single_voice_score("Ténor 1"))
+        octaves = [n.pitch.octave for n in res.models[0].measures[0].notes]
+        self.assertEqual(octaves, [3, 3, 3, 3])
+
+    def test_explicit_octave_change_is_not_double_corrected(self):
+        # Le petit "8" EST présent dans la gravure (Audiveris l'a lu) : l'octave
+        # sonnante est déjà correcte dans le MusicXML — ne pas re-décaler.
+        res = read_musicxml(
+            _single_voice_score("Tenor2", clef_extra="<clef-octave-change>-1</clef-octave-change>")
+        )
+        octaves = [n.pitch.octave for n in res.models[0].measures[0].notes]
+        self.assertEqual(octaves, [4, 4, 4, 4])
+        self.assertFalse(any("octave-tenor" in w for w in res.warnings))
+
+    def test_soprano_name_not_shifted(self):
+        res = read_musicxml(_single_voice_score("Soprano"))
+        octaves = [n.pitch.octave for n in res.models[0].measures[0].notes]
+        self.assertEqual(octaves, [4, 4, 4, 4])
+        self.assertFalse(any("octave-tenor" in w for w in res.warnings))
+
+    def test_generic_name_not_shifted(self):
+        # Sans identité lue (nom générique) : aucune correction — pas de
+        # supposition statistique, cf. avertissement [part-name] à la place.
+        res = read_musicxml(_single_voice_score("Voice"))
+        octaves = [n.pitch.octave for n in res.models[0].measures[0].notes]
+        self.assertEqual(octaves, [4, 4, 4, 4])
+        self.assertFalse(any("octave-tenor" in w for w in res.warnings))
+
+
 class TestChordPolicy(unittest.TestCase):
     def test_chord_keeps_top_note_and_warns(self):
         body = (

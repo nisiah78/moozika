@@ -1193,6 +1193,18 @@ export const SolfaScore = forwardRef<SolfaScoreHandle, SolfaScoreProps>(
     beatDraftsRef.current = {};
     cellOverridesRef.current = {};
     setCellOverrides({});
+    // Paroles reconnues à l'import (OMR sol-fa PDF ou saisie) : préremplit la
+    // ligne éditable au lieu de la laisser vide (cf. Measure.beatLyrics côté
+    // omr-service). Une seule ligne partagée pour tout le système, cf. la
+    // convention déjà utilisée par la clé `${measureAbs}-${beatIndex}`.
+    const seededLyrics: LyricsState = {};
+    (result.voices[0]?.model.measures ?? []).forEach((measure, mi) => {
+      measure.beatLyrics?.forEach((word, bi) => {
+        if (word) seededLyrics[`${mi}-${bi}`] = word;
+      });
+    });
+    setLyrics(seededLyrics);
+    lyricsRef.current = seededLyrics;
     setError(
       anyError
         ? "Certains temps sont incomplets ou trop longs (surlignés en rouge)."

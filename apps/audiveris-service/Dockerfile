@@ -29,6 +29,21 @@ RUN wget -q \
     && rm /tmp/audiveris.deb \
     && ln -sf /opt/audiveris/bin/Audiveris /usr/local/bin/Audiveris
 
+# OCR (titres/paroles/noms de pupitre) : TesseractOrder d'Audiveris 5.11 démarre
+# TOUJOURS en mode Tesseract LEGACY (log « TesseractOrder. Could not initialize
+# TessBaseAPI... in legacy mode »), qui exige les composants legacy embarqués
+# dans le fichier de langue — ABSENTS des paquets "tessdata_fast"/"tessdata_best"
+# (LSTM seul, ~4 Mo) tels que le paquet Debian tesseract-ocr-eng. Sans ça,
+# aucun texte n'est jamais reconnu (credit/lyric/part-name), quelle que soit la
+# résolution/qualité — diagnostiqué sur docs/solfege/light/Nisolo-ny-masoandro.pdf
+# (erreur runtime exacte : « Tesseract (legacy) engine requested, but components
+# are not present »). Fix confirmé : le fichier COMBINÉ (legacy+LSTM, ~23 Mo) du
+# dépôt canonique tesseract-ocr/tessdata (PAS tessdata_fast/tessdata_best).
+RUN mkdir -p /root/.config/AudiverisLtd/audiveris/tessdata \
+    && wget -q \
+        "https://raw.githubusercontent.com/tesseract-ocr/tessdata/main/eng.traineddata" \
+        -O /root/.config/AudiverisLtd/audiveris/tessdata/eng.traineddata
+
 WORKDIR /app
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt

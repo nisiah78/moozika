@@ -1,7 +1,7 @@
 """Nettoyage des voix OMR (Audiveris) avant affichage sol-fa."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from ..solfa.model import Measure, NoteEl, ScoreModel
 from ..solfa.rhythm import split_duration
@@ -16,8 +16,40 @@ def _part_base(name: str) -> str:
     return name.split(" v")[0].strip().lower()
 
 
+def _is_generic_name(name: str) -> bool:
+    """« Voice » (placeholder propre à Audiveris pour une part sans titre lu
+    sur la partition) / « Voix » (notre repli quand <part-name> manque) / id de
+    part brut — aucun n'est un VRAI nom de voix. Miroir de la même notion dans
+    ``from_musicxml._assign_satb_names`` (même cause racine, deux points de
+    nommage SATB dans le pipeline portée)."""
+    base = _part_base(name)
+    return base in ("", "voix", "voice", "p1", "p2", "p3", "p4") or base.startswith(
+        ("voix", "voice")
+    )
+
+
 def _is_piano(name: str) -> bool:
     return _part_base(name) in _PIANO_NAMES
+
+
+_CANONICAL_LABELS = ("Soprano", "Alto", "Tenor", "Bass")
+
+
+def _detected_label(name: str) -> Optional[str]:
+    """Label SATB canonique si ``name`` le désigne EXPLICITEMENT (donnée lue
+    sur la partition via l'OCR Audiveris, ex. « Tenor2 », « Basse » — pas une
+    estimation par tessiture). None si le nom ne porte aucune identité
+    reconnaissable (generique, ou role hors SATB comme « Baryton »)."""
+    base = _part_base(name)
+    if "soprano" in base:
+        return "Soprano"
+    if "alto" in base:
+        return "Alto"
+    if "tenor" in base or "ténor" in base:
+        return "Tenor"
+    if "bass" in base or "basse" in base:
+        return "Bass"
+    return None
 
 
 def _is_accompaniment(model: ScoreModel) -> bool:
@@ -142,12 +174,47 @@ def _select_piano_lines(piano: List[ScoreModel], *, min_notes: int = 8) -> List[
 
 
 def _name_voices(kept: List[ScoreModel]) -> None:
-    """Nomme les voix triées par registre (aigu→grave). ≤4 voix : SATB. Au-delà
-    (divisi), on garde les repères SATB par registre et on suffixe les voix d'un
-    même pupitre ``I``/``II`` (ex. 2 voix aiguës → Soprano I / Soprano II)."""
+    """Nomme les voix triées par registre (aigu→grave). ≤4 voix : SATB — en
+    priorité par IDENTITÉ RÉELLE (nom lu sur la partition, ex. « Tenor2 » via
+    l'OCR Audiveris) quand elle désigne explicitement un pupitre SATB ; jamais
+    une estimation par tessiture quand une donnée lue existe (cf. TTBB pris à
+    tort pour SATB : 2 voix nommées « Tenor » ne doivent plus ressortir
+    Soprano/Alto). Les positions restantes (identité non détectée) sont
+    comblées par tessiture, comportement historique inchangé. Au-delà de 4 voix
+    (divisi), on garde les repères SATB par registre et on suffixe les voix
+    d'un même pupitre ``I``/``II`` (ex. 2 voix aiguës → Soprano I / Soprano
+    II) — l'identité réelle n'est pas encore branchée sur ce chemin (divisi
+    franc, cas rare)."""
     n = len(kept)
     if n <= 4:
-        for m, name in zip(kept, ("Soprano", "Alto", "Tenor", "Bass")[:n]):
+        canonical = _CANONICAL_LABELS[:n]
+        detected = [_detected_label(m.part_name) for m in kept]
+        # 1. Ancrer les identités RÉELLEMENT détectées, dans l'ordre de
+        #    tessiture (kept est déjà trié aigu→grave) : la 1re occurrence d'un
+        #    label prend le label nu, une 2e occurrence (même pupitre en 2 voix,
+        #    ex. 2 ténors) prend le suffixe I/II.
+        counts: dict = {}
+        for d in detected:
+            if d in canonical:
+                counts[d] = counts.get(d, 0) + 1
+        assigned: List[Optional[str]] = [None] * n
+        seen: dict = {}
+        used_labels = set()
+        for i, d in enumerate(detected):
+            if d in canonical:
+                seen[d] = seen.get(d, 0) + 1
+                assigned[i] = f"{d} {_roman(seen[d])}" if counts[d] > 1 else d
+                used_labels.add(d)
+        # 2. Compléter les positions non ancrées avec les labels canoniques
+        #    RESTANTS, dans l'ordre de tessiture — comportement historique quand
+        #    aucune identité n'est détectée nulle part.
+        free_labels = [l for l in canonical if l not in used_labels]
+        fi = 0
+        for i in range(n):
+            if assigned[i] is None:
+                assigned[i] = free_labels[fi] if fi < len(free_labels) else canonical[i]
+                fi += 1
+        for m, name in zip(kept, assigned):
             m.part_name = name
         return
     # >4 voix : répartir les n voix (triées aigu→grave) en 4 pupitres par rang,
@@ -215,7 +282,8 @@ def _cluster_lines(models: List[ScoreModel]) -> List[ScoreModel]:
 
 
 def consolidate_omr_voices(
-    models: List[ScoreModel], *, max_voices: int = 8, include_piano: bool = True
+    models: List[ScoreModel], *, max_voices: int = 8, include_piano: bool = True,
+    warnings: Optional[List[str]] = None,
 ) -> List[ScoreModel]:
     """Nettoie le bruit OMR → lignes chorales SATB nommées par IDENTITÉ.
 
@@ -226,7 +294,11 @@ def consolidate_omr_voices(
     ANCRES S/A/T/B, tout reliquat n'étant promu voix distincte (divisi I/II) que
     s'il est substantiel ET simultané, sinon absorbé (§7.3 : comble les silences,
     jamais par-dessus une vraie note) ; (3) nommage par tessiture (aigu→grave).
-    ``max_voices`` borne le nombre de lignes (garde-fou anti-explosion)."""
+    ``max_voices`` borne le nombre de lignes (garde-fou anti-explosion).
+    ``warnings`` (optionnel) reçoit un avertissement quand le nommage S/A/T/B
+    est une ESTIMATION par tessiture faute de tout nom lisible sur la partition
+    (Audiveris ne préserve alors aucun libellé exploitable) — à distinguer d'un
+    nommage confirmé par un vrai ``<part-name>``."""
     choral = [m for m in models if not _is_accompaniment(m)]
     piano = [m for m in models if _is_accompaniment(m)]
     if not choral:
@@ -259,7 +331,18 @@ def consolidate_omr_voices(
 
     # 3. Nommer par tessiture (aigu→grave) : S/A/T/B (+ I/II pour les vrais divisi).
     kept.sort(key=_median_height, reverse=True)
+    generic_before = bool(kept) and all(_is_generic_name(m.part_name) for m in kept)
     _name_voices(kept)
+    if generic_before and warnings is not None:
+        entry = (
+            "[part-name] noms de voix non fournis par Audiveris — attribution "
+            "Soprano/Alto/Tenor/Bass par tessiture (estimation, pas une donnée "
+            "lue). Une voix de ténor notée en clé de Sol classique peut sonner "
+            "une octave plus bas que noté : vérifiez au son, corrigez via le "
+            "bouton d'octave de la vue Partition si besoin."
+        )
+        if entry not in warnings:
+            warnings.append(entry)
 
     if include_piano and piano:
         kept.extend(_select_piano_lines(piano))

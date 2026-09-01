@@ -17,6 +17,7 @@ import {
   cloneScore,
   makeNote,
   regenerateFromModels,
+  renameVoice,
 } from "@/lib/scoreEdit";
 import { voiceAbbr } from "@/lib/voiceAbbr";
 import { NotePicker, type NotePickerChoice } from "@/components/NotePicker";
@@ -123,6 +124,7 @@ function VoiceStaff({
   onOpenDirective,
   onRemoveChip,
   onShiftOctave,
+  onRename,
   showDirectives,
   busy,
   readOnly,
@@ -139,6 +141,7 @@ function VoiceStaff({
   onOpenDirective: (measureIndex: number, clientX: number, clientY: number) => void;
   onRemoveChip: (measureIndex: number, chip: DirectiveChip) => void;
   onShiftOctave: (delta: number) => void;
+  onRename: (name: string) => void;
   showDirectives: boolean;
   busy: boolean;
   readOnly?: boolean;
@@ -147,6 +150,7 @@ function VoiceStaff({
   measureStarts: number[];
   totalW: number;
 }) {
+  const [isEditingName, setIsEditingName] = useState(false);
   const clef = (voice.model.clef === "bass" ? "bass" : "treble") as StaffClef;
   const measures = voice.model.measures;
   const divisions = voice.model.divisions || 1;
@@ -167,12 +171,38 @@ function VoiceStaff({
     <>
       {/* Étiquette de voix : collée à gauche (reste visible pendant le scroll). */}
       <div className="staff-label sticky left-0 z-30 flex w-fit items-center gap-1 bg-paper pr-3 text-[11px] font-semibold" style={{ color: "var(--paper-ink)" }}>
-        <span title={voice.name}>
-          {voiceAbbr(voice.name)}{" "}
-          <span className="font-normal opacity-55">
-            ({clef === "bass" ? "clé de fa" : "clé de sol"})
+        {readOnly || !isEditingName ? (
+          <span
+            title={
+              readOnly
+                ? voice.name
+                : "Cliquer pour renommer (nom parfois estimé par tessiture, pas lu sur la partition)"
+            }
+            className={readOnly ? undefined : "cursor-text hover:opacity-80"}
+            onClick={readOnly ? undefined : () => setIsEditingName(true)}
+          >
+            {voiceAbbr(voice.name)}{" "}
+            <span className="font-normal opacity-55">
+              ({clef === "bass" ? "clé de fa" : "clé de sol"})
+            </span>
           </span>
-        </span>
+        ) : (
+          <input
+            autoFocus
+            defaultValue={voice.name}
+            disabled={busy}
+            className="w-24 border bg-paper px-1 text-[11px] font-semibold"
+            style={{ borderColor: "var(--paper-div)", color: "var(--paper-ink)" }}
+            onBlur={(e) => {
+              onRename(e.target.value);
+              setIsEditingName(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") setIsEditingName(false);
+            }}
+          />
+        )}
         {/* Décaler toute la voix d'une octave (corrige une erreur d'octave OMR).
             Pure affordance d'édition : en lecture on ne la rend pas du tout,
             plutôt que de la désactiver — elle sort ainsi aussi de l'arbre
@@ -631,6 +661,24 @@ export function StaffEditor({
     }
   };
 
+  /** Renomme une voix (corrige un nom SATB générique attribué par estimation
+   *  de tessiture — cf. avertissement [part-name] — quand Audiveris n'a pas pu
+   *  lire le vrai libellé imprimé, ex. Tenor 1/2 pris pour Soprano/Alto). */
+  const renameVoiceAndRegen = async (vi: number, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === result.voices[vi]?.name) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = renameVoice(result, vi, trimmed);
+      onChange(await regenerateFromModels(next, next.voices));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   /** Décale TOUTE une voix de ±1 octave (corrige une erreur d'octave OMR : le
    *  son ET l'affichage utilisent la même hauteur, donc les deux se remettent
    *  d'aplomb). Réversible d'un clic. */
@@ -784,6 +832,7 @@ export function StaffEditor({
                   }}
                   onRemoveChip={(mi, chip) => void removeChipAndRegen(mi, chip)}
                   onShiftOctave={(delta) => void shiftVoiceOctave(vi, delta)}
+                  onRename={(name) => void renameVoiceAndRegen(vi, name)}
                   showDirectives={vi === 0}
                   busy={busy}
                   measureWidths={layout.widths}

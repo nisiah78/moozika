@@ -99,13 +99,18 @@ export function Popover({
       ref={ref}
       role={role}
       aria-label={ariaLabel}
-      className={`fixed border border-divider bg-surface-2 text-ink shadow-lg print:hidden ${className}`}
+      className={`fixed border border-divider shadow-lg print:hidden ${className}`}
       style={{
         left: pos?.left ?? x,
         top: pos?.top ?? y,
         zIndex: level,
         visibility: pos ? "visible" : "hidden",
         animation: "moo-pop .14s ease",
+        // Fond en inline style, pas en classe Tailwind `bg-surface-2` : ce
+        // panneau doit être OPAQUE (il flotte au-dessus du contenu), même
+        // patron de repli que `Drawer.tsx`.
+        background: "var(--color-surface-2, #2c261d)",
+        color: "var(--color-text, #f2ebda)",
       }}
     >
       {children}

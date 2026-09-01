@@ -61,6 +61,10 @@ class SolfaDocument:
     # Reconstruction par barres vectorielles (grille à mètre variable) : notation
     # dégradable (bruit de grille) → l'aval parse en mode ``degrade``.
     degrade_hint: bool = False
+    # Paroles par voix, même format texte que ``parser._parse_lyrics`` (mesures
+    # séparées par ``|``, temps par ``:``/``!``). Vide (``""``) quand aucune ligne
+    # de paroles n'a été détectée pour cette voix — jamais inventé.
+    lyrics: List[str] = field(default_factory=list)
 
 
 def _cluster_rows(runs: List[Run]) -> List[List[Run]]:
@@ -1350,6 +1354,165 @@ def _is_annotation_token(text: str) -> bool:
     return any(c not in _SOLFA_LETTERS for c in letters)
 
 
+# --------------------------------------------------------------------------
+# Paroles (lyrics) — extraction depuis la mise en page, chemin ROW-ANCHORED
+# (voir solfa-format.md § Porté et système pour les deux conventions gérées) :
+#   (a) une ligne de paroles PAR VOIX, entrelacée juste en dessous (canon) ;
+#   (b) une ligne PARTAGÉE juste après la dernière voix (hymnaire SATB
+#       homophonique, ex. 244.pdf : Soprano/Alto/Tenor/Bass puis 1 ligne de
+#       paroles commune).
+# Alignement par proximité x (« grossièrement alignées », cf. solfa-format.md) :
+# best-effort, jamais inventé (une syllabe non détectée reste ``None``,
+# corrigeable dans l'éditeur — même tolérance que le reste de la reconstruction
+# OCR/layout).
+# --------------------------------------------------------------------------
+
+
+def _looks_like_lyrics(row: List[Run]) -> bool:
+    """Une ligne « ressemble » à des paroles si au moins un mot porte une lettre
+    hors de l'alphabet sol-fa (même critère que ``_is_annotation_token``,
+    appliqué mot par mot plutôt qu'au niveau d'un jeton de mesure)."""
+    merged = merge_close_glyphs(row, gap_tol=_HEADER_GLYPH_GAP)
+    words = [r.text.strip() for r in merged if r.text.strip()]
+    return any(_is_annotation_token(w) for w in words)
+
+
+def _system_lyric_rows(
+    system: List[List[Run]], rows: List[List[Run]]
+) -> List[Optional[List[Run]]]:
+    """Ligne(s) de paroles d'un système, une par voix (``None`` si aucune paroles
+    fiable). Essaie d'abord la convention ENTRELACÉE (une ligne par voix,
+    immédiatement en dessous) ; si ça ne couvre pas toutes les voix, replie sur
+    la convention PARTAGÉE (une ligne juste après la dernière voix, dupliquée
+    sur toutes les voix du système)."""
+    n = len(system)
+    row_index = {id(r): i for i, r in enumerate(rows)}
+    idxs = [row_index.get(id(r)) for r in system]
+    if any(i is None for i in idxs):
+        return [None] * n
+
+    per_voice: List[Optional[List[Run]]] = []
+    for i in idxs:
+        nxt = rows[i + 1] if i + 1 < len(rows) else None
+        if nxt is not None and not _is_voice_row(nxt) and _looks_like_lyrics(nxt):
+            per_voice.append(nxt)
+        else:
+            per_voice.append(None)
+    if all(v is not None for v in per_voice):
+        return per_voice
+
+    last_idx = idxs[-1]
+    if last_idx + 1 < len(rows):
+        cand = rows[last_idx + 1]
+        if not _is_voice_row(cand) and _looks_like_lyrics(cand):
+            return [cand] * n
+    return [None] * n
+
+
+def _row_beats_with_x(row: List[Run]) -> List[List[Tuple[str, float]]]:
+    """Comme ``row_to_measures_anchored`` (mêmes jetons, mêmes frontières de
+    barre — ``_is_solfa_beat``) mais garde le x de CHAQUE temps, pas seulement
+    le premier de la mesure. Sert uniquement à l'alignement des paroles ;
+    n'affecte pas la reconstruction de la notation elle-même."""
+    tokens = _tokenize_row_anchored(row)
+    measures: List[List[Tuple[str, float]]] = []
+    current: List[Tuple[str, float]] = []
+    for tok, x in tokens:
+        if tok == "BAR":
+            if current:
+                measures.append(current)
+                current = []
+            continue
+        if not _is_solfa_beat(tok):
+            continue
+        current.append((tok, x))
+    if current:
+        measures.append(current)
+    return measures
+
+
+def _extract_lyric_words(row: List[Run]) -> List[Tuple[str, float]]:
+    """Mots de paroles avec leur x (glyphes recollés comme un texte normal,
+    cf. ``_row_plain``)."""
+    merged = merge_close_glyphs(row, gap_tol=_HEADER_GLYPH_GAP)
+    return [(r.text.strip(), r.x) for r in merged if r.text.strip()]
+
+
+def _lyric_measures_for_voice(
+    voice_row: List[Run], lyric_row: Optional[List[Run]]
+) -> List[List[Optional[str]]]:
+    """Paroles d'UNE voix regroupées par mesure/temps comme sa notation,
+    chaque mot affecté à un temps par proximité x.
+
+    Alignement MONOTONE (mots et temps sont deux séquences déjà triées
+    gauche→droite sur la même ligne) : un pointeur de temps qui n'avance
+    jamais en arrière, plutôt qu'un plus-proche-voisin global. Un
+    plus-proche-voisin global peut faire gagner à un mot un temps déjà
+    « mieux » revendiqué par un mot voisin et ainsi INVERSER l'ordre de lecture
+    (ex. anacrouse : « Ry » plus proche du 2ᵉ temps une fois le 1ᵉʳ pris par
+    « Je- » alors que la lecture est Ry→Je-→so). Un temps sans mot proche reste
+    ``None`` (tenue/mélisme) ; les mots en surplus au-delà du dernier temps
+    sont perdus plutôt que mal placés."""
+    if lyric_row is None:
+        return []
+    beat_measures = _row_beats_with_x(voice_row)
+    if not beat_measures:
+        return []
+    result: List[List[Optional[str]]] = [[None] * len(m) for m in beat_measures]
+    words = _extract_lyric_words(lyric_row)
+    if not words:
+        return result
+
+    boundaries = [(mi, bi, x) for mi, m in enumerate(beat_measures) for bi, (_, x) in enumerate(m)]
+    if not boundaries:
+        return result
+    n = len(boundaries)
+    j = 0
+    for word, wx in words:
+        if j >= n:
+            break
+        while j + 1 < n and abs(boundaries[j + 1][2] - wx) <= abs(boundaries[j][2] - wx):
+            j += 1
+        mi, bi, _x = boundaries[j]
+        result[mi][bi] = word
+        j += 1
+    return result
+
+
+def _system_lyric_measures(
+    system: List[List[Run]], rows: List[List[Run]], n_voices: int
+) -> List[List[List[Optional[str]]]]:
+    """Paroles brutes (avant padding) de CHAQUE voix d'un système, en un seul
+    appel — regroupe détection de ligne + alignement, pour ne pas alourdir
+    l'appelant (``build_document``) de variables locales supplémentaires."""
+    lyric_rows = _system_lyric_rows(system, rows)
+    return [
+        _lyric_measures_for_voice(system[v], lyric_rows[v]) if v < len(system) else []
+        for v in range(n_voices)
+    ]
+
+
+def _pad_lyric_measures(
+    measures: List[List[Optional[str]]], target_len: int
+) -> List[List[Optional[str]]]:
+    """Aligne le nombre de mesures de paroles sur le nombre FINAL de mesures de
+    la voix (après normalisation/alignement x) : tronque, ou complète par des
+    mesures vides. Best-effort — un padding en fin de système peut désaligner
+    les paroles d'une voix entrée en retard (silences insérés au milieu par
+    ``_align_system_by_x``) ; accepté, corrigeable dans l'éditeur."""
+    out = list(measures[:target_len])
+    while len(out) < target_len:
+        out.append([])
+    return out
+
+
+def _lyrics_string(measures: List[List[Optional[str]]]) -> str:
+    """Sérialise en texte ``_parse_lyrics`` (mesures ``|``, temps ``:``)."""
+    if not any(any(b for b in m) for m in measures):
+        return ""
+    return "|".join(":".join(b or "" for b in m) for m in measures)
+
+
 def _measure_cell_string(tokens: List[Run]) -> str:
     """Chaîne de notation d'UNE mesure à partir de ses jetons (déjà porteurs des
     séparateurs `:`/`.`/`,`). Les notes JUXTAPOSÉES d'un même demi (glyphes fusionnés
@@ -1626,6 +1789,7 @@ def build_document(
         return SolfaDocument(header=header, voices=voices, voice_names=names)
 
     voices_measures: List[List[List[str]]] = [[] for _ in range(n_voices)]
+    lyric_measures: List[List[List[Optional[str]]]] = [[] for _ in range(n_voices)]
     for system in systems:
         anchored = [
             row_to_measures_anchored(system[v])
@@ -1639,24 +1803,31 @@ def build_document(
             _split_mashed_anacrusis_anchored(m, beats, origin, width) for m in anchored
         ]
 
+        sys_lyric_measures = _system_lyric_measures(system, rows, n_voices)
+
         if len(system) == 1 and n_voices > 1:
             # Intro / section monodique (Soprano) : autres voix en silences.
             sop = _prepare_voice_measures(
                 [beats_list for _, beats_list in anchored[0]], beats
             )
             voices_measures[0].extend(sop)
+            lyric_measures[0].extend(_pad_lyric_measures(sys_lyric_measures[0], len(sop)))
             rest = _rest_measure(beats)
             for v in range(1, n_voices):
                 voices_measures[v].extend([list(rest) for _ in sop])
+                lyric_measures[v].extend([[] for _ in sop])
             continue
 
         raw = _align_system_by_x(anchored, system, n_voices, beats)
         for v, measures in enumerate(raw):
-            voices_measures[v].extend(_prepare_voice_measures(measures, beats))
+            prepared = _prepare_voice_measures(measures, beats)
+            voices_measures[v].extend(prepared)
+            lyric_measures[v].extend(_pad_lyric_measures(sys_lyric_measures[v], len(prepared)))
 
     voices = [
         _measures_to_notation(_prepare_voice_measures(m, header.beats or 4))
         for m in voices_measures
     ]
+    lyrics = [_lyrics_string(m) for m in lyric_measures]
     names = list(_SATB) if n_voices == 4 else [f"Voix {i + 1}" for i in range(n_voices)]
-    return SolfaDocument(header=header, voices=voices, voice_names=names)
+    return SolfaDocument(header=header, voices=voices, voice_names=names, lyrics=lyrics)

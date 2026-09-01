@@ -198,12 +198,12 @@ def pdf_to_models(
     models: List[ScoreModel] = []
     errors: List[str] = []
     pairs = [
-        (name, notation)
-        for name, notation in zip(doc.voice_names, doc.voices)
+        (name, notation, doc.lyrics[i] if i < len(doc.lyrics) else None)
+        for i, (name, notation) in enumerate(zip(doc.voice_names, doc.voices))
         if notation.strip()
     ]
     total = len(pairs) or 1
-    for idx, (name, notation) in enumerate(pairs):
+    for idx, (name, notation, voice_lyrics) in enumerate(pairs):
         check(is_cancelled)
         try:
             model = parse_solfa(
@@ -221,6 +221,9 @@ def pdf_to_models(
                 # ex. 11.pdf) qui peut porter du bruit de grille. PDF typographié
                 # ordinaire (rythme fiable) → pas touché.
                 degrade=scanned or doc.degrade_hint,
+                # Paroles reconnues depuis la mise en page (app/pdf/layout.py) —
+                # vide/None si aucune ligne de paroles fiable n'a été détectée.
+                lyrics=voice_lyrics,
             )
         except ParseError as exc:
             errors.append(f"voix {name!r}: {exc}")
